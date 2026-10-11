@@ -624,47 +624,54 @@ def _find_meta_dict(code: str) -> ast.Dict:
 
 
 def _set_meta_string_field(block: str, field: str, value: str) -> str:
-    pattern = re.compile(
-        rf"(?m)^(\s*[\"']{re.escape(field)}[\"']\s*:\s*)([\"'])(?:\\.|[^\n\\])*?\2"
-    )
-    next_block, count = pattern.subn(
-        lambda m: f"{m.group(1)}{_py_string(value)}",
-        block,
-        count=1,
-    )
-    if count:
-        return next_block
-    return _insert_meta_field(block, field, _py_string(value))
+    return _set_meta_field_repr(block, field, _py_string(value))
 
 
-def _insert_meta_field(block: str, field: str, value_repr: str) -> str:
-    """在 META 字典末尾(闭合 `}` 之前)插入一个字段。value_repr 已是 Python 源码。"""
+def _set_meta_field_repr(block: str, field: str, value_repr: str) -> str:
+    """按 AST 位置改写 META 字典的顶层字段 (存在则替换值, 不存在则在 `}` 前插入)。
+
+    block 为 META 赋值语句所在的完整行 (从 `META = {` 那一行到 `}` 那一行)。不依赖
+    排版: pprint 风格 (`META = {'id': ...,` 首键与 `{` 同行、续行单空格缩进)、单行字典、
+    嵌套字典里的同名键都能正确处理。旧版按行首正则匹配, pprint 风格下认不出首行的键,
+    插入点又落在闭合 `}` 之外, 生成 `...}, \\n "id": ...` 的非法代码
+    (报「规范化 META 失败: unexpected indent」)。
+    """
+    tree = ast.parse(block)
+    meta_node = next(
+        (node.value for node in tree.body
+         if isinstance(node, (ast.Assign, ast.AnnAssign)) and isinstance(node.value, ast.Dict)),
+        None,
+    )
+    if meta_node is None:
+        raise ValueError("找不到 META 字典")
     lines = block.splitlines(keepends=True)
-    key_indent = None
+    offsets = [0]
     for line in lines:
-        m = re.match(r"^(\s*)[\"'][^\"']+[\"']\s*:", line)
-        if m:
-            key_indent = m.group(1)
-            break
-    if key_indent is None:
-        first_indent = re.match(r"^(\s*)", lines[0] if lines else "")
-        key_indent = (first_indent.group(1) if first_indent else "") + "    "
+        offsets.append(offsets[-1] + len(line))
 
-    insert_at = len(lines)
-    for i in range(len(lines) - 1, -1, -1):
-        if lines[i].lstrip().startswith("}"):
-            insert_at = i
-            break
-    for i in range(insert_at - 1, -1, -1):
-        if not lines[i].strip():
-            continue
-        body = lines[i].rstrip("\r\n")
-        if body.rstrip() and not body.rstrip().endswith((",", "{")):
-            newline = lines[i][len(body):]
-            lines[i] = body.rstrip() + "," + newline
-        break
-    lines.insert(insert_at, f'{key_indent}"{field}": {value_repr},\n')
-    return "".join(lines)
+    def _pos(lineno: int, col: int) -> int:
+        # ast 列号是 UTF-8 字节偏移; 换算成字符串下标
+        line = lines[lineno - 1]
+        return offsets[lineno - 1] + len(line.encode("utf-8")[:col].decode("utf-8"))
+
+    for key, value in zip(meta_node.keys, meta_node.values, strict=True):
+        if isinstance(key, ast.Constant) and key.value == field:
+            start = _pos(value.lineno, value.col_offset)
+            end = _pos(value.end_lineno, value.end_col_offset)
+            return block[:start] + value_repr + block[end:]
+
+    # 不存在: 插在闭合 `}` 之前; 末项已有尾逗号则插在逗号之后, 否则补逗号
+    close = _pos(meta_node.end_lineno, meta_node.end_col_offset) - 1  # 指向 `}`
+    if meta_node.values:
+        last = meta_node.values[-1]
+        tail_at = _pos(last.end_lineno, last.end_col_offset)
+        between = block[tail_at:close]
+        stripped = between.lstrip()
+        if stripped.startswith(","):
+            comma_at = tail_at + (len(between) - len(stripped)) + 1
+            return block[:comma_at] + f' "{field}": {value_repr},' + block[comma_at:]
+        return block[:tail_at] + f', "{field}": {value_repr}' + block[tail_at:]
+    return block[:close] + f'"{field}": {value_repr}' + block[close:]
 
 
 def _set_meta_bool_field(code: str, field: str, value: bool) -> str:
@@ -679,16 +686,7 @@ def _set_meta_bool_field(code: str, field: str, value: bool) -> str:
     block = "".join(lines[start:end])
 
     value_repr = "True" if value else "False"
-    key_pattern = re.compile(
-        rf"(?m)^(\s*[\"']{re.escape(field)}[\"']\s*:\s*)(?:True|False|[\"'][^\"'\n]*[\"'])"
-    )
-    next_block, count = key_pattern.subn(
-        lambda m: f"{m.group(1)}{value_repr}",
-        block,
-        count=1,
-    )
-    if not count:
-        next_block = _insert_meta_field(block, field, value_repr)
+    next_block = _set_meta_field_repr(block, field, value_repr)
     lines[start:end] = next_block.splitlines(keepends=True)
     return "".join(lines)
 
