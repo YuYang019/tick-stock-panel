@@ -323,6 +323,11 @@ uv run --extra dev python -m ruff check app/plugins/<your_plugin>/ tests/test_<y
   - `client.py` — httpx 客户端(Bearer 认证 + HTTP 状态码/detail 信封解包 + 服务端护栏常量: 单请求 codes ≤2000、分钟 bar ≤200k、日K cell ≤400k)
   - `provider.py` — Provider 实现(日K 矩阵→长表、停牌 cell 跳过、批大小按窗口跨度动态计算、修复轮 provider 侧过滤当日 bar 防 `_write_minute_partition` 跨分区写放大、分钟显式 schema 防 #458 稀疏列推断问题、快照 last≤0 行跳过防 -100% 伪涨跌、批间软失败隔离、Key 探活回报标的数)
   - `tests/test_amber_provider.py` — 35 个契约测试(矩阵映射/单位零换算/分块进度/历史 bar 过滤/分段失败隔离/快照列式映射/软失败/loader 注册)
+- **`backend/app/plugins/tushare/`** — Tushare Pro HTTP 数据源(runtime: none, 不引入 tushare SDK, 直接 POST `api.tushare.pro`)
+  - 提供 `daily`(股票 `daily` / ETF `fund_daily` / 指数 `index_daily`, 原始价; 标的数多于窗口工作日数时按 `trade_date` 逐日拉全市场, 否则按 `ts_code` 区间拉; amount 千元→元, vol 已是手)、`adj_factor`(`adj_factor` / `fund_adj` 累积后复权因子 → 单事件比值 `adj(t)/adj(t_prev)`, 窗口前多取 30 天, 经 `_apply_adj_factor` 回放验证)、`minute`(股票 `stk_mins`, vol 股→手, 北京墙钟 naive, ETF/指数抛错回退 TickFlow)、`financial`(income/balancesheet/cashflow/fina_indicator, 只取合并报表 + 最新修订, 百分比指标为百分点与 fuyao 一致, shares 恒空)、`get_instruments`(stock_basic L/P + daily_basic 最新股本 万股→股); 未实现 realtime(rt_k 需单独权限); Key 在设置页卡片配置(先探后存, trade_cal 1 行验证), 或 `.env` 配 `TUSHARE_TOKEN`
+  - **动态能力声明**: `config.datasets` 按 token 权限裁剪。`__init__` 不发请求只读缓存 `data/cache/tushare/capabilities.json`(token 指纹 + 时间, TTL 24h); 缓存缺失/过期时首次读 `datasets` 起后台线程对各数据集代表接口试拉 1 行(短超时)。仅 `TusharePermissionError`(40203 且非限频文案)裁剪, 网络/限频错误保留声明并 10 分钟后重探。`loader.list_plugins` 返回 manifest 与 `config.datasets` 交集, 能力矩阵与 `provider_has_dataset` 同口径
+  - `client.py` — httpx 客户端(信封解包、错误分类: 权限/token/限频, 限频退避重试 3 次、按接口 60s 滑动窗口限频 默认 200 次/分钟 `TUSHARE_RPM` 覆盖、offset 分页(has_more/空页/短页终止 + 页数上限 fail-closed)、异常消息擦除 token)
+  - `tests/test_tushare_provider.py` — 58 个契约测试(单位/日期/路由、复权比值经 pipeline 回放、财务映射、权限裁剪与缓存、client 分类/重试/分页/token 不外泄、loader 注册)
 - **`backend/app/plugins/stocksdk/`** — Node 型插件, 通过 subprocess 桥接调用 stock-sdk
   - `bridge.py` — Python↔Node 桥接 + availability 检测
   - `bridge.mjs` — Node 端(并发池、重试、SDK 解析)
