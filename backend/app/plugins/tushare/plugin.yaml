@@ -1,0 +1,15 @@
+# Tushare Pro — 纯 HTTP 源 (http://api.tushare.pro), 不引入 tushare SDK (runtime: none)。
+# 需在 .env 或环境变量配置 TUSHARE_TOKEN(或设置页直接填写), 未配置时插件灰显不可切换。
+# datasets 为全集; 运行时按 token 实际权限裁剪(无权限的数据集自动回退 TickFlow)。
+# realtime 未实现(rt_k 需单独权限), 不声明。
+
+name: tushare
+display_name: "tushare"
+runtime: none
+entry: app.plugins.tushare.provider:TushareProvider
+check: app.plugins.tushare.provider:availability
+datasets: [daily, adj_factor, minute, financial]
+api_key_env: TUSHARE_TOKEN   # 声明后设置页提供 Key 输入框(先探后存, secrets.json 优先)
+description: "Tushare Pro HTTP 接口。日K(股票/ETF/指数原始价, 全市场按交易日逐日拉取)、除权因子(累积后复权因子转单事件比值)、1 分钟K(股票, 深历史)、财务(利润表/资产负债表/现金流量表/指标, 合并报表, 字段映射至项目口径; 股本表未接入)、标的维表。数据集按 token 权限自动裁剪, 无权限的自动回退 TickFlow; 实时行情需 rt_k 权限, 当前未接入。"
+install_hint: "点击卡片中的输入框配置 Token(https://tushare.pro 注册获取),或在 .env 中配置 TUSHARE_TOKEN"
+homepage: "https://tushare.pro"

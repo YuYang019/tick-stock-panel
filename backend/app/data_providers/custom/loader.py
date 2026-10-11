@@ -87,8 +87,23 @@ def list_sources() -> list[dict]:
 
 
 def list_plugins() -> list[dict]:
-    """返回所有内置插件的状态 (含已装/未装), 供设置页独立分类显示。"""
-    return list(_PLUGIN_STATUS.values())
+    """返回所有内置插件的状态 (含已装/未装), 供设置页独立分类显示。
+
+    已注册插件的 datasets 取 manifest 与 provider.config.datasets 的交集: 运行时
+    裁剪声明的插件 (如 tushare 按 token 权限) 不会在能力矩阵里露出实际不可路由的
+    数据集, 与 provider_has_dataset 保持同一口径。未注册插件按 manifest 展示。
+    """
+    out = []
+    for status in _PLUGIN_STATUS.values():
+        provider = _PROVIDERS.get(status["name"])
+        if provider is not None:
+            try:
+                live = provider.config.datasets
+                status = {**status, "datasets": [d for d in status["datasets"] if d in live]}
+            except Exception as e:  # noqa: BLE001 — 读声明失败按 manifest 展示, 不影响列表
+                logger.warning("插件 %s 读取 datasets 失败: %s", status["name"], e)
+        out.append(status)
+    return out
 
 
 def _plugin_key_masked(name: str, api_key_env: str) -> str:
