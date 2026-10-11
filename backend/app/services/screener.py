@@ -296,8 +296,10 @@ class ScreenerService:
             compute_signals,
         )
 
-        warmup = 60
-        start = target_date - timedelta(days=min((lookback_days + warmup) * 2, 180))
+        # 预热按最长窗口指标 (ma120) 计: 交易日 → 自然日约 ×1.5, 再留长假余量。
+        # 旧实现封顶 180 自然日 (~122 交易日), lookback≥90 的策略窗口被截断。
+        warmup = 120
+        start = target_date - timedelta(days=int((lookback_days + warmup) * 1.5) + 30)
 
         enriched_dir = self.repo.store.data_dir / self._enriched_dirname
         # 同 _compute_enriched_full: turnover_rate 存储列随行透传 (#187)

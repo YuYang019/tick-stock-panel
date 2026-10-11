@@ -1240,22 +1240,19 @@ class KlineRepository:
         if "date" not in cache.columns:
             return None
         cache_max = cache["date"].max()
-        cache_min = cache["date"].min()
-        from datetime import timedelta
-        # 验证缓存覆盖完整范围 (含 warmup)。lookback_days 是交易日语义, 用 ×2 日历日
-        # 放宽确保覆盖 (节假日/周末), 与 warmup 60 一起留足余量。
-        warmup_start = target_date - timedelta(days=(lookback_days + 60) * 2)
-        if cache_min > warmup_start or cache_max < target_date:
+        if cache_max < target_date:
             return None
-        # 按交易日计数裁剪: 从数据里实际存在的交易日序列取最后 lookback_days 个交易日。
-        # 不能用 timedelta(days=N) (自然日), 否则周末/节假日会让窗口只有 ~N×5/7 个交易日,
-        # 导致 filter_history 策略的滚动窗口/行号差(_gap)漏算, 与回测结果不一致。
+        # 覆盖判定按交易日计数: 缓存构建时已多读预热段 (指标从首行起即完整), 只需
+        # 缓存内目标日及之前至少有 lookback_days+1 个交易日。旧判据要求
+        # (lookback+60)×2 个自然日, 300 天缓存对 lookback≥90 的策略恒判 miss,
+        # 落到慢路径 (窗口被截断, ma120/rps_120 等长窗口指标算不满)。
+        # 按交易日裁剪: 不能用 timedelta(days=N) (自然日), 否则周末/节假日会让窗口只有
+        # ~N×5/7 个交易日, 导致 filter_history 策略的滚动窗口/行号差(_gap)漏算。
         # 只数目标日及之前的交易日: 历史日期运行策略时缓存里还有更晚的交易日
         trading_dates = cache["date"].filter(cache["date"] <= target_date).unique().sort()
-        if len(trading_dates) > lookback_days:
-            lookback_start = trading_dates[-(lookback_days + 1)]
-        else:
-            lookback_start = trading_dates[0]
+        if len(trading_dates) <= lookback_days:
+            return None
+        lookback_start = trading_dates[-(lookback_days + 1)]
         return cache.filter((pl.col("date") >= lookback_start) & (pl.col("date") <= target_date))
 
     def get_enriched_range(
