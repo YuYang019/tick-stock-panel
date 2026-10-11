@@ -1155,10 +1155,12 @@ export function Screener() {
               {displayRows.length === 0 ? (
                 <EmptyState
                   icon={ScanSearch}
-                  title={filterActive(filter) ? '筛选后无命中' : '今日无命中'}
+                  title={filterActive(filter) ? '筛选后无命中' : !showAll && result?.regime_blocked ? '情绪择时暂停开仓' : '今日无命中'}
                   hint={filterActive(filter)
                     ? '当前筛选条件过严, 试试放宽或重置筛选。'
-                    : '可能数据未跑盘后管道,或策略条件过于严苛。试试 POST /api/pipeline/run。'}
+                    : !showAll && result?.regime_blocked
+                      ? `${result.regime_blocked}。策略文件 REGIME_PHASES 控制可开仓阶段, 卖出信号不受影响。`
+                      : '可能数据未跑盘后管道,或策略条件过于严苛。试试 POST /api/pipeline/run。'}
                 />
               ) : (
                 <>
