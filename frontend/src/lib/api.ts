@@ -406,6 +406,8 @@ export interface ScreenerResult {
   rows: any[]
   total: number
   elapsed_ms: number
+  /** 情绪周期择时拦截原因 (策略声明 REGIME_PHASES 且前一交易日阶段不在白名单) */
+  regime_blocked?: string | null
 }
 
 export interface ScreenerResultSummary {
