@@ -618,12 +618,16 @@ class KlineRepository:
 
                 from app.indicators.pipeline import compute_enriched_history_window
                 start_full = latest - timedelta(days=300)
+                # 多读一段预热 (与 get_daily 同 _DAILY_WARMUP_DAYS): 否则缓存首段
+                # ma120/ma60/动量等窗口指标为空, 而 get_daily/策略按"缓存起点 ≤ 请求起点"
+                # 复用缓存, 会把这段空值当作已算好的结果返回。算完裁回 start_full。
+                read_start = start_full - timedelta(days=_DAILY_WARMUP_DAYS)
                 read_cols = [c for c in ["symbol", "date", "open", "high", "low", "close",
                                          "volume", "amount", "raw_close", "raw_high", "raw_low"]
                              if c in df_latest.columns]
                 lf = (
                     scan_enriched_parquet(self._enriched_glob)
-                    .filter(pl.col("date") >= start_full)
+                    .filter(pl.col("date") >= read_start)
                     .sort(["symbol", "date"])
                 )
 
@@ -649,6 +653,7 @@ class KlineRepository:
                         include_instrument_metadata=True,
                     )
                     del df_hist
+                    df_full = df_full.filter(pl.col("date") >= start_full)
                     logger.info("enriched refresh step done: compute window rows=%d (%.2fs)",
                                 len(df_full), time.perf_counter() - step)
 
