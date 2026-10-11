@@ -35,6 +35,17 @@ def _normalize_regime_point(value: Any) -> RegimePoint:
     raise ValueError("市场环境数据格式无效")
 
 
+def regime_filter_active(regime_filter: Mapping[str, Any] | None) -> bool:
+    """过滤是否实际启用: states / min_score / phases (情绪周期阶段) 任一非空。"""
+    if not regime_filter:
+        return False
+    return bool(
+        regime_filter.get("states")
+        or regime_filter.get("min_score") is not None
+        or regime_filter.get("phases")
+    )
+
+
 def clamp_formal_start_for_regime(
     labels: Sequence[str],
     required_start: date | None,
@@ -51,9 +62,7 @@ def clamp_formal_start_for_regime(
     """
     if not regime_filter or required_start is None:
         return required_start
-    has_states = bool(regime_filter.get("states") or [])
-    has_score = regime_filter.get("min_score") is not None
-    if not (has_states or has_score):
+    if not regime_filter_active(regime_filter):
         return required_start
     if len(labels) < 2:
         return required_start
@@ -137,16 +146,22 @@ def build_regime_filter_mask(
     level can be filtered on its own. Callers that want the aggregated
     three-level view must list the raw states explicitly, e.g.
     ``["strong", "lean_strong"]`` for the strong bucket.
+
+    ``phases`` 按情绪周期阶段 (market_phase: ice/ignite/rally/climax/ebb/repair)
+    白名单过滤, 与 states/min_score 取交集; regime_by_date 的值需带 ``phase`` 键。
+    同样按 T-1 对齐 (今日开仓只看昨日收盘后已知的阶段), 覆盖校验与 state 共用。
     """
-    if not regime_filter:
+    if not regime_filter_active(regime_filter):
         return None
     allowed_states = {
         str(state)
         for state in (regime_filter.get("states") or [])
     }
+    allowed_phases = {
+        str(phase)
+        for phase in (regime_filter.get("phases") or [])
+    }
     min_score = regime_filter.get("min_score")
-    if not allowed_states and min_score is None:
-        return None
 
     aligned = align_regime_t_minus_one(
         labels,
@@ -154,13 +169,22 @@ def build_regime_filter_mask(
         required_start,
         required_end,
     )
+    phase_by_date = {
+        _date_text(key): str(value.get("phase") or "")
+        for key, value in regime_by_date.items()
+        if isinstance(value, Mapping)
+    }
     mask = np.ones(len(labels), dtype=bool)
     for index, point in enumerate(aligned):
         if point is None:
             continue
         state, score = point
-        mask[index] = (
+        keep = (
             (not allowed_states or state in allowed_states)
             and (min_score is None or score >= float(min_score))
         )
+        if keep and allowed_phases:
+            # aligned[index] 有值即前一交易日环境存在; 阶段缺失 (旧数据未重标) 视为不满足
+            keep = phase_by_date.get(_date_text(labels[index - 1]), "") in allowed_phases
+        mask[index] = keep
     return mask

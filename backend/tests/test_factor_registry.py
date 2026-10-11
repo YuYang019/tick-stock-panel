@@ -102,12 +102,13 @@ GOLDEN_COLUMNS: list[dict] = [
     {"id": "ma120_bias", "label": "MA120乖离", "group": "均线偏离", "desc": "收盘价 / MA120 - 1"},
 ]
 
-# 相对强度族 (app/factors/relative_strength.py 模块化注册, 追加在目录之后; 18 项)
+# 相对强度族 (app/factors/relative_strength.py 模块化注册, 追加在目录之后; 19 项)
 GOLDEN_RS_IDS: list[str] = [
     *(f"rps_{n}" for n in (20, 60, 120, 250)),
     *(f"rps_ind_{n}" for n in (20, 60, 120, 250)),
     *(f"industry_rps_{n}" for n in (20, 60, 120, 250)),
     *(f"excess_{n}" for n in (20, 60, 120, 250)),
+    "rps_20_delta_5",
     "rs_line_new_high_60",
     "rs_line_slope_20",
 ]
@@ -246,10 +247,10 @@ def test_scoring_warmup_snapshot() -> None:
 
 def test_catalog_counts_and_kinds() -> None:
     specs = all_factors()
-    assert len(specs) == 96  # 目录 78 + 相对强度 18
-    assert len({spec.id for spec in specs}) == 96  # id 唯一
+    assert len(specs) == 97  # 目录 78 + 相对强度 19
+    assert len({spec.id for spec in specs}) == 97  # id 唯一
     virtual = [spec for spec in specs if spec.kind == "virtual"]
-    assert len(virtual) == 53 + 18  # ma/ema 10 + 原有 26 + 扩充批次 16 + ma120_bias + 相对强度 18
+    assert len(virtual) == 53 + 19  # ma/ema 10 + 原有 26 + 扩充批次 16 + ma120_bias + 相对强度 19
     financial = [spec for spec in specs if spec.pit]
     assert len(financial) == 7
     assert all(spec.pit_source == "financial_announce" for spec in financial)
@@ -277,8 +278,8 @@ def test_get_factor_and_dependencies() -> None:
 def test_asset_type_filter() -> None:
     stock = all_factors(asset_type="stock")
     etf = all_factors(asset_type="etf")
-    assert len(stock) == 96
-    assert len(etf) == 71  # 财务 7 项 + 相对强度 18 项仅股票
+    assert len(stock) == 97
+    assert len(etf) == 71  # 财务 7 项 + 相对强度 19 项仅股票
 
 
 def test_register_factor_rejects_duplicate() -> None:
@@ -325,7 +326,7 @@ def test_factors_api_contract() -> None:
     assert response.status_code == 200
     payload = response.json()
     factors = payload["factors"]
-    assert len(factors) == 96
+    assert len(factors) == 97
     first = factors[0]
     assert first["id"] == "momentum_5d"
     assert first["kind"] == "base"

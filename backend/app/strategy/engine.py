@@ -209,6 +209,9 @@ class StrategyDef:
     # 仅 minute_filter: META["daily_history_bars"] 声明需要的日线历史窗口 (0=不需要;
     # >0 时 filter_minute_history 必须接受 daily 关键字, 引擎注入 context.daily_history)
     minute_daily_bars: int = 0
+    # 情绪周期择时白名单 (market_phase 阶段 id); 空 = 不择时。选股按 T-1 阶段拦截,
+    # 回测未显式传 regime_filter 时以此为默认 (实盘与回测同一口径)
+    regime_phases: tuple[str, ...] = ()
 
 
 @dataclass
@@ -222,6 +225,25 @@ class StrategyResult:
     scores: dict[str, float] = field(default_factory=dict)
     entry_signal_hits: list[dict] = field(default_factory=list)
     exit_signal_hits: list[dict] = field(default_factory=list)
+    # 情绪周期择时拦截原因 (策略声明 REGIME_PHASES 且 T-1 阶段不在白名单时非空)
+    regime_blocked: str | None = None
+
+
+def _parse_regime_phases(raw: object, path: Path | None) -> tuple[str, ...]:
+    """REGIME_PHASES 校验: 只接受 market_phase 已定义的阶段 id, 非法即加载失败 (fail-closed)。"""
+    if not raw:
+        return ()
+    from app.services.market_phase import PHASE_LABELS
+
+    if isinstance(raw, str) or not isinstance(raw, (list, tuple, set, frozenset)):
+        raise ValueError(f"{path}: REGIME_PHASES 必须是阶段 id 列表")
+    phases = tuple(dict.fromkeys(str(p) for p in raw))
+    unknown = [p for p in phases if p not in PHASE_LABELS]
+    if unknown:
+        raise ValueError(
+            f"{path}: REGIME_PHASES 含未知阶段 {unknown}; 可选 {sorted(PHASE_LABELS)}"
+        )
+    return phases
 
 
 @dataclass
@@ -582,6 +604,7 @@ class StrategyEngine:
             composite=composite_spec,
             filter_minute_history_fn=filter_minute_history_fn,
             minute_daily_bars=minute_daily_bars,
+            regime_phases=_parse_regime_phases(getattr(mod, "REGIME_PHASES", None), path),
         )
 
     def reload(self) -> None:
@@ -879,6 +902,29 @@ class StrategyEngine:
     # ================================================================
 
     def run(
+        self,
+        strategy_id: str,
+        context: StrategyDataContext,
+        pool: list[str] | None = None,
+        params: dict | None = None,
+        overrides: dict | None = None,
+    ) -> StrategyResult:
+        """执行策略 (含情绪周期择时), 见 _run_unfiltered。
+
+        择时只拦开仓候选: 结果行与买入信号清空并带 regime_blocked 原因;
+        卖出信号 (exit_signal_hits) 照常返回 —— 持仓离场不受情绪阶段影响。
+        """
+        result = self._run_unfiltered(strategy_id, context, pool, params, overrides)
+        reason = self.regime_block_reason(self.get(strategy_id), context.as_of)
+        if reason:
+            result.rows = []
+            result.total = 0
+            result.scores = {}
+            result.entry_signal_hits = []
+            result.regime_blocked = reason
+        return result
+
+    def _run_unfiltered(
         self,
         strategy_id: str,
         context: StrategyDataContext,
@@ -1763,6 +1809,36 @@ class StrategyEngine:
             if d.name == "custom" and d.parent.name == "strategies":
                 return d.parent.parent
         return None
+
+    def regime_block_reason(self, s: StrategyDef, as_of: date) -> str | None:
+        """情绪周期择时: as_of 之前最近一个交易日 (T-1) 的阶段不在 REGIME_PHASES 时返回原因。
+
+        与回测 build_regime_filter_mask 同口径: as_of 的开仓决策只看前一交易日收盘后
+        已确定的阶段, 不用当日 (盘中/当日收盘) 数据。阶段数据缺失时不拦截但给出原因
+        之外的放行 —— 与回测缺失日放行一致, 由数据页「市场环境」补算。
+        """
+        if not s.regime_phases:
+            return None
+        data_dir = self._user_data_dir()
+        if data_dir is None:
+            return None
+        from app.services import regime_builder
+        from app.services.market_phase import PHASE_LABELS
+
+        df = regime_builder.load_regime_history(data_dir)
+        if df.is_empty() or "phase" not in df.columns:
+            return None
+        prev = df.filter(pl.col("date") < as_of).sort("date").tail(1)
+        if prev.is_empty():
+            return None
+        phase = str(prev["phase"][0] or "")
+        if not phase or phase in s.regime_phases:
+            return None
+        allowed = "/".join(PHASE_LABELS.get(p, p) for p in s.regime_phases)
+        return (
+            f"情绪择时暂停: {prev['date'][0]} 阶段为「{PHASE_LABELS.get(phase, phase)}」, "
+            f"策略仅在 {allowed} 阶段开仓"
+        )
 
     def _inject_intraday_signal_columns(self, minute_df: pl.DataFrame) -> pl.DataFrame:
         """向当日分钟K帧注入自定义盘中信号列(csgi_, 当日条件上升沿)。
