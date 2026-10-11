@@ -5,7 +5,7 @@ import asyncio
 import json
 import logging
 import threading
-from datetime import UTC, date, datetime, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
 from functools import reduce
 from pathlib import Path
 from typing import Any
@@ -61,6 +61,25 @@ def _in_time_window(start: str | None, end: str | None) -> bool:
         return start <= now < end
     # 跨午夜: 如 22:00-02:00
     return now >= start or now < end
+
+
+def _seconds_until_window_start(start: str, interval: float) -> float:
+    """窗口外: 睡到下一个窗口起点 (北京时间), 而不是睡满一个 interval。
+
+    否则 interval=1440 分钟时, 在窗口外启用 (或进程在窗口外启动) 的配置会每天
+    同一时刻醒来、同样落在窗口外, 永远不执行。上限取 interval, 窗口起点算不出时
+    退回 interval (旧行为)。
+    """
+    try:
+        hour, minute = (int(x) for x in start.split(":", 1))
+        now = cn_now()
+        target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if target <= now:
+            target += timedelta(days=1)
+        wait = (target - now).total_seconds() + 1  # +1s 确保醒来时已在窗口内
+    except (ValueError, AttributeError):
+        return interval
+    return max(1.0, min(wait, interval))
 
 
 # ---------------------------------------------------------------------------
@@ -565,7 +584,7 @@ class PullScheduler:
                     store.upsert(fresh, keep_strategy_cache=True)
                     logger.info("PullScheduler: %s skipped (outside time window)", config.id)
                     interval = max(pull.schedule_minutes * 60, 60)
-                    await asyncio.sleep(interval)
+                    await asyncio.sleep(_seconds_until_window_start(pull.time_window_start, interval))
                     continue
 
                 # 先执行一次 (启用即拉取, 让用户立刻看到生效)
