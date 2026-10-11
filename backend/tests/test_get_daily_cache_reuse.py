@@ -1,7 +1,7 @@
 """get_daily 复用 enriched 历史缓存的等价性测试。
 
 个股对话框打开时 /api/kline/daily 每个行情 tick 调用一次; 旧路径每次
-150 天扫描 + 全套指标重算, 新路径优先从预计算历史缓存裁剪。
+200 天扫描 + 全套指标重算, 新路径优先从预计算历史缓存裁剪。
 本测试证明: 同一份数据下两条路径输出逐列一致, 且缓存命中时不触发扫描。
 """
 from __future__ import annotations
@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 
 import polars as pl
+import pytest
 from polars.testing import assert_frame_equal
 
 from app.tickflow.repository import KlineRepository
@@ -82,7 +83,7 @@ def test_get_daily_cache_path_matches_scan_path():
     assert result_new.height == result_old.height
 
     common = sorted(set(result_old.columns) & set(result_new.columns))
-    assert {"open", "close", "ma5", "ma20", "ma60", "rsi_14"} <= set(common)
+    assert {"open", "close", "ma5", "ma20", "ma60", "ma120", "rsi_14"} <= set(common)
     assert_frame_equal(
         result_old.sort("date").select(common),
         result_new.sort("date").select(common),
@@ -104,3 +105,33 @@ def test_get_daily_falls_back_to_scan_when_cache_does_not_cover_start():
     result = repo.get_daily(SYM, dates[0] - timedelta(days=5), dates[-1])
     assert calls["scan"] == 1
     assert not result.is_empty()
+
+
+def test_get_daily_scan_warmup_fills_ma120_from_range_start():
+    """扫描路径预热须覆盖 120 个交易日: 区间首行 MA120 = 全量 rolling_mean(120)。"""
+    raw = _raw_frame(days=300)
+    dates = raw["date"].to_list()
+    start, end = dates[150], dates[-1]
+
+    repo, calls = _bare_repo(raw)
+    result = repo.get_daily(SYM, start, end).sort("date")
+    assert calls["scan"] == 1
+
+    expected = (
+        raw.with_columns(pl.col("close").rolling_mean(120).alias("ma120"))
+        .filter((pl.col("date") >= start) & (pl.col("date") <= end))
+        .sort("date")["ma120"]
+    )
+    assert result["ma120"].null_count() == 0
+    assert result["ma120"].to_list() == pytest.approx(expected.to_list(), rel=1e-12)
+
+
+def test_get_daily_ma120_null_until_120_bars():
+    raw = _raw_frame(days=130)
+    dates = raw["date"].to_list()
+
+    repo, _ = _bare_repo(raw)
+    result = repo.get_daily(SYM, dates[0], dates[-1]).sort("date")
+    ma120 = result["ma120"].to_list()
+    assert all(v is None for v in ma120[:119])
+    assert ma120[119] == pytest.approx(sum(raw["close"].to_list()[:120]) / 120, rel=1e-12)

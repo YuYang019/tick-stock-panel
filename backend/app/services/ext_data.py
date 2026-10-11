@@ -723,6 +723,16 @@ def write_ext_parquet(
                 logger.warning("扩展表 %s 合并去重失败, 将覆盖写入: %s", config.id, e)
 
     df = cast_df_to_schema(df, config.fields)
+    if config.mode == "snapshot":
+        # 行业快照点时归档 (RPS 行业相对因子的 PIT 来源): 每次写入同步落 history/date=snap;
+        # 归档失败不阻断快照写入 (因子侧回退快照 + 结果注记偏差)。
+        try:
+            from app.factors.relative_strength import INDUSTRY_CONFIG_ID, archive_industry_snapshot
+
+            if config.id == INDUSTRY_CONFIG_ID:
+                archive_industry_snapshot(df, data_dir, snap)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("行业归属归档失败 (不影响快照写入): %s", e)
     if config.mode != "snapshot":
         # 日内序列表: 分区内按 [symbol, 时间列] 升序落盘。读侧 (screener._load_ext_value_maps、
         # ext_factors 因子帧、板块资金流) 按 symbol unique(keep="last") 收敛到一行, 只认行序;

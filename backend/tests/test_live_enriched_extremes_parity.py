@@ -72,6 +72,8 @@ def _incremental_and_full(tmp_path) -> tuple[pl.DataFrame, pl.DataFrame]:
 
     repo = KlineRepository(DataStore(tmp_path))
     repo._enriched_history_cache = history_indicators
+    # 与 _refresh_enriched_impl 同口径: 缓存按 300 自然日读取 (本地历史更短 → 缓存即全量)
+    repo._enriched_history_read_start = latest - timedelta(days=300)
     repo._build_live_agg(latest)
 
     today_ohlcv = bars.filter(pl.col("date") == TODAY).drop("raw_close", "raw_high", "raw_low")

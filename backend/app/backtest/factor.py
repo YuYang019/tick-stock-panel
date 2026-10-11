@@ -99,6 +99,8 @@ class FactorResult:
     yearly_ic: list[dict] = field(default_factory=list)
     ic_decay: list[dict] = field(default_factory=list)
     regime_stats: list[dict] = field(default_factory=list)
+    # 降级注记 (如行业快照未来函数偏差 / ST 非点时); 旧结果缺字段 = 无注记
+    warnings: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -144,6 +146,7 @@ class FactorBatchItem:
     nw_lag: int | None = None
     p_value: float | None = None
     q_value: float | None = None
+    warnings: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -207,7 +210,7 @@ class FactorBacktestService:
             if regime_by_date is not None
             else {}
         )
-        return self._evaluate_panel(
+        result = self._evaluate_panel(
             panel,
             config,
             run_id,
@@ -215,6 +218,8 @@ class FactorBacktestService:
             market_trading_dates=trading_dates,
             **evaluate_kwargs,
         )
+        result.warnings = self._result_warnings(config, [config.factor_name])
+        return result
 
     def run_batch(
         self,
@@ -339,6 +344,7 @@ class FactorBacktestService:
                     n_dates=result.n_dates,
                     elapsed_ms=result.elapsed_ms,
                     error=result.error,
+                    warnings=self._result_warnings(config, [factor_name]),
                     t_naive=t_naive,
                     t_newey_west=nw[0] if nw else None,
                     nw_lag=1 if nw else None,
@@ -411,7 +417,7 @@ class FactorBacktestService:
             panel_columns.append("consecutive_limit_ups")
         load_start = config.start
         if any(name != "turnover_rate" for name in factor_names):
-            load_start = config.start - timedelta(days=FACTOR_WARMUP_DAYS)
+            load_start = config.start - timedelta(days=self._warmup_calendar_days(factor_names))
 
         load_kwargs = {
             "columns": panel_columns,
@@ -440,6 +446,33 @@ class FactorBacktestService:
                 fundamental_names,
             )
         return panel
+
+    @staticmethod
+    def _warmup_calendar_days(factor_names: list[str]) -> int:
+        """按因子注册表 warmup_bars 推导预热自然日 (下限 FACTOR_WARMUP_DAYS)。
+
+        交易日 → 自然日 ×1.6 + 15 (与 /api/factors/trial 同口径), 使 rps_250 (251 bar)
+        这类长窗口因子在检验区间首日即满窗, 而不是被 120 自然日截断成前段全空。
+        """
+        from app.factors.registry import get_factor
+
+        bars = max(
+            ((spec.warmup_bars if (spec := get_factor(name)) is not None else 1) for name in factor_names),
+            default=1,
+        )
+        return max(FACTOR_WARMUP_DAYS, int(bars * 1.6) + 15)
+
+    def _result_warnings(self, config: FactorConfig | FactorBatchConfig, factor_names: list[str]) -> list[str]:
+        from app.factors.relative_strength import result_warnings
+
+        try:
+            return result_warnings(
+                factor_names, config.start, symbols=config.symbols,
+                data_dir=self._fundamentals_data_dir(),
+            )
+        except Exception:  # noqa: BLE001 - 注记失败不阻断检验
+            logger.warning("factor result warnings failed", exc_info=True)
+            return []
 
     def _global_trading_dates(
         self,
@@ -686,11 +719,12 @@ class FactorBacktestService:
         from app.factors.registry import get_factor
         from app.indicators.pipeline import compute_indicators
 
-        # custom/composite 因子走注册表→DSL/组合 的同一条物化路径 (P3, 与策略评分共用);
-        # 其底层依赖 (如 change_pct/ma20) 先经内置补算路径物化, 再做 DSL/组合物化。
+        # custom/composite/indicator 因子走注册表→DSL/组合/通达信指标 的同一条物化路径
+        # (P3, 与策略评分共用); 其底层依赖 (如 change_pct/ma20) 先经内置补算路径物化。
         registry_names = {
             name for name in factor_cols
-            if (spec := get_factor(name)) is not None and spec.kind in ("custom", "composite")
+            if (spec := get_factor(name)) is not None
+            and (spec.kind in ("custom", "composite", "indicator") or "relative_strength" in spec.tags)
         }
         if registry_names:
             base_deps: set[str] = set()

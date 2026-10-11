@@ -1,22 +1,58 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { type KlineRow } from '@/lib/api'
+import { api, type IndicatorItem, type KlineRow } from '@/lib/api'
 import { klineDailyQueryOptions } from '@/lib/kline'
+import { QK } from '@/lib/queryKeys'
 import { storage } from '@/lib/storage'
 import {
+  BUILTIN_MAIN_INDICATORS,
+  indicatorSubKey,
+  layoutIndicatorIds,
+  loadChartLayout,
+  saveChartLayout,
+  toggleMainOutput,
+  toggleSub,
+  visibleOutputs,
+  type ChartLayout,
+  type MaKey,
+} from '@/lib/chartLayout'
+import {
   EChartsCandlestick,
-  OVERLAY_INDICATORS,
+  INDICATOR_SUB_HEIGHT,
   SUB_CHARTS,
+  resolveSubChartDefs,
+  subChartsTotalHeight,
   type ChartMarker,
+  type IndicatorOverlay,
+  type SubChartDef,
   type ChartPriceLine,
   type ChartRange,
   type OHLC,
   type VolumeCompareConfig,
 } from '@/components/EChartsCandlestick'
 
-const SUB_INFO_H = 16
-const SUB_GAP = 4
 const DEFAULT_VOLUME_COMPARE: VolumeCompareConfig = { enabled: true, days: 1 }
+const SUB_KEYS = SUB_CHARTS.map(s => s.key)
+/** 后端 /series 单次 ids 上限 */
+const MAX_SERIES_IDS = 10
+
+interface MenuGroup {
+  id: string
+  label: string
+  outputs: readonly { key: string; label: string; color?: string | null }[]
+}
+
+/** 自定义主图指标 → 下拉分组; NODRAW (visible=false) 输出不出现 */
+function customMainGroups(indicators: readonly IndicatorItem[]): MenuGroup[] {
+  return indicators
+    .filter(ind => ind.pane === 'main')
+    .map(ind => ({
+      id: ind.id,
+      label: ind.builtin ? `${ind.name} · 预设` : ind.name,
+      outputs: ind.outputs.filter(o => o.visible).map(o => ({ key: o.key, label: o.name, color: o.color })),
+    }))
+    .filter(g => g.outputs.length > 0)
+}
 
 function normalizeVolumeCompare(config: VolumeCompareConfig): VolumeCompareConfig {
   return {
@@ -66,7 +102,9 @@ export function toOHLC(rows: KlineRow[]): OHLC[] {
       ma5: r.ma5 != null ? Number(r.ma5) : null,
       ma10: r.ma10 != null ? Number(r.ma10) : null,
       ma20: r.ma20 != null ? Number(r.ma20) : null,
+      ma30: r.ma30 != null ? Number(r.ma30) : null,
       ma60: r.ma60 != null ? Number(r.ma60) : null,
+      ma120: r.ma120 != null ? Number(r.ma120) : null,
       macd_dif: r.macd_dif != null ? Number(r.macd_dif) : null,
       macd_dea: r.macd_dea != null ? Number(r.macd_dea) : null,
       macd_hist: r.macd_hist != null ? Number(r.macd_hist) : null,
@@ -106,25 +144,151 @@ export function getDefaultRange(): { start: string; end: string } {
 
 /** 工具栏小胶囊开关（指标与标注开关共用一套尺寸/关闭态样式，激活色由调用方给字面量）。 */
 function ChartPill({
-  active, label, activeClass, title, onClick,
+  active, label, activeClass, title, onClick, buttonRef, ariaProps,
 }: {
   active: boolean
   label: string
   activeClass: string
   title?: string
   onClick: () => void
+  buttonRef?: React.Ref<HTMLButtonElement>
+  /** 覆盖默认 aria-pressed (如下拉触发器用 aria-haspopup/aria-expanded) */
+  ariaProps?: React.AriaAttributes
 }) {
   return (
     <button
+      ref={buttonRef}
       type="button"
       onClick={onClick}
       title={title}
-      className={`px-2 py-0.5 rounded text-[10px] font-mono cursor-pointer transition-colors ${
+      {...(ariaProps ?? { 'aria-pressed': active })}
+      className={`inline-flex h-5 items-center px-2 rounded text-[10px] leading-none font-mono cursor-pointer transition-colors ${
         active ? activeClass : 'bg-elevated text-muted hover:text-secondary'
       }`}
     >
       {label}
     </button>
+  )
+}
+
+/** 主图叠加指标下拉: 逐条输出线勾选 (内置 MA/BOLL 在前, pane=main 的自定义指标在后) */
+function MainIndicatorMenu({
+  layout, showMA, customGroups, customLoading, onToggle,
+}: {
+  layout: ChartLayout
+  showMA: boolean
+  customGroups: readonly MenuGroup[]
+  customLoading: boolean
+  onToggle: (id: string, output: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const rootRef = useRef<HTMLDivElement>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    // 打开即把焦点移到首个复选项, 键盘可直接操作
+    menuRef.current?.querySelector<HTMLInputElement>('input[type="checkbox"]')?.focus()
+    const onDown = (e: MouseEvent) => {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setOpen(false)
+        triggerRef.current?.focus()
+      }
+    }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open])
+
+  const builtinGroups: MenuGroup[] = BUILTIN_MAIN_INDICATORS.filter(g => showMA || g.id !== 'ma')
+  const groups = [...builtinGroups, ...customGroups]
+  // 计数只算当前能渲染的线 (已删除指标的残留选择不计)
+  const activeCount = groups.reduce(
+    (n, g) => n + visibleOutputs(layout, g.id).filter(k => g.outputs.some(o => o.key === k)).length,
+    0,
+  )
+
+  // 上下方向键在复选项间移动焦点 (role=menu 的键盘约定)
+  const onMenuKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp' && e.key !== 'Home' && e.key !== 'End') return
+    const items = Array.from(menuRef.current?.querySelectorAll<HTMLInputElement>('input[type="checkbox"]') ?? [])
+    if (items.length === 0) return
+    e.preventDefault()
+    const cur = items.indexOf(document.activeElement as HTMLInputElement)
+    let next = 0
+    if (e.key === 'End') next = items.length - 1
+    else if (e.key === 'ArrowDown') next = cur < 0 ? 0 : (cur + 1) % items.length
+    else if (e.key === 'ArrowUp') next = cur <= 0 ? items.length - 1 : cur - 1
+    items[next].focus()
+  }
+
+  // flex 包裹: 块级 div 内的行内按钮会带行框基线留白, 比同行胶囊高出一截
+  return (
+    <div ref={rootRef} className="relative flex items-center">
+      <ChartPill
+        buttonRef={triggerRef}
+        active={activeCount > 0}
+        label={`主图${activeCount > 0 ? ` ${activeCount}` : ''} ▾`}
+        activeClass="bg-accent/20 text-accent"
+        title="选择主图叠加指标"
+        ariaProps={{ 'aria-haspopup': 'menu', 'aria-expanded': open }}
+        onClick={() => setOpen(v => !v)}
+      />
+      {open && (
+        <div
+          ref={menuRef}
+          role="menu"
+          aria-label="主图指标"
+          onKeyDown={onMenuKeyDown}
+          className="absolute left-0 top-full z-20 mt-1 max-h-[60vh] min-w-[160px] overflow-y-auto rounded border border-border bg-base p-1.5 shadow-lg"
+        >
+          {groups.map((group, gi) => {
+            const visible = visibleOutputs(layout, group.id)
+            return (
+              <div
+                key={group.id}
+                role="group"
+                aria-label={group.label}
+                className={`py-0.5 ${gi === builtinGroups.length && gi > 0 ? 'mt-0.5 border-t border-border/70 pt-1' : ''}`}
+              >
+                <div className="px-1 pb-0.5 text-[10px] text-muted" aria-hidden="true">{group.label}</div>
+                {group.outputs.map(out => (
+                  <label
+                    key={out.key}
+                    className="flex cursor-pointer items-center gap-1.5 rounded px-1 py-0.5 text-[11px] font-mono text-secondary hover:bg-elevated"
+                  >
+                    <input
+                      type="checkbox"
+                      role="menuitemcheckbox"
+                      aria-checked={visible.includes(out.key)}
+                      checked={visible.includes(out.key)}
+                      onChange={() => onToggle(group.id, out.key)}
+                      className="h-3 w-3 accent-current"
+                    />
+                    <span
+                      className="inline-block h-0.5 w-3 shrink-0 rounded"
+                      style={{ backgroundColor: out.color ?? 'currentColor' }}
+                      aria-hidden="true"
+                    />
+                    <span className="truncate">{out.label}</span>
+                  </label>
+                ))}
+              </div>
+            )
+          })}
+          {customLoading && customGroups.length === 0 && (
+            <div className="px-1 pt-1 text-[10px] text-muted" role="status">自定义指标加载中…</div>
+          )}
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -148,7 +312,24 @@ export function StockDailyKChart({
   extColumns,
   addedDate,
 }: Props) {
-  const [activeIndicators, setActiveIndicators] = useState<string[]>(['vol'])
+  // 指标布局全局持久化 (localStorage): 下次打开任意个股仍按上次的主图/副图选择展示
+  const [layout, setLayout] = useState<ChartLayout>(() => loadChartLayout(SUB_KEYS))
+  const updateLayout = useCallback((fn: (prev: ChartLayout) => ChartLayout) => {
+    setLayout(prev => {
+      const next = fn(prev)
+      saveChartLayout(next)
+      return next
+    })
+  }, [])
+  const maLines = useMemo(
+    () => visibleOutputs(layout, 'ma') as MaKey[],
+    [layout],
+  )
+  // EChartsCandlestick 以 activeIndicators 承载副图顺序 + BOLL 叠加开关
+  const activeIndicators = useMemo(
+    () => (visibleOutputs(layout, 'boll').length > 0 ? [...layout.sub, 'boll'] : layout.sub),
+    [layout],
+  )
   const [showMarkers, setShowMarkers] = useState(true)
   // 加入自选日标注（与「异动」标记相互独立）
   const [showAddedMark, setShowAddedMark] = useState(true)
@@ -168,9 +349,71 @@ export function StockDailyKChart({
     ...(showLimitMarkers ? limitMarkers : []),
   ], [limitMarkers, markers, showLimitMarkers])
 
+  // ===== 通达信自定义指标 =====
+  // 列表只在有工具栏或布局里有自定义指标时需要; 布局里残留的已删除 id 由此过滤掉
+  const layoutIds = useMemo(() => layoutIndicatorIds(layout), [layout])
+  const indicatorList = useQuery({
+    queryKey: QK.indicators.list,
+    queryFn: api.listIndicators,
+    enabled: !!symbol && (showIndicatorControls || layoutIds.length > 0),
+    staleTime: 60_000,
+  })
+  const indicators = useMemo(() => indicatorList.data ?? [], [indicatorList.data])
+  const indicatorById = useMemo(() => new Map(indicators.map(i => [i.id, i])), [indicators])
+  const customGroups = useMemo(() => customMainGroups(indicators), [indicators])
+  const subIndicators = useMemo(() => indicators.filter(i => i.pane === 'sub'), [indicators])
+
+  // 只为"布局中可见 + 仍存在"的指标取数: 主图需至少一条勾选线, 副图需胶囊开启
+  const visibleIds = useMemo(() => {
+    const ids = layoutIds.filter(id => {
+      const ind = indicatorById.get(id)
+      if (!ind) return false
+      if (ind.pane === 'sub') return layout.sub.includes(indicatorSubKey(id))
+      const sel = visibleOutputs(layout, id)
+      return ind.outputs.some(o => o.visible && sel.includes(o.key))
+    })
+    return ids.slice(0, MAX_SERIES_IDS)
+  }, [layoutIds, indicatorById, layout])
+
+  const series = useQuery({
+    queryKey: QK.indicators.series(symbol, visibleIds, dateRange.start, dateRange.end),
+    queryFn: () => api.indicatorSeries(symbol, visibleIds, dateRange),
+    enabled: !!symbol && visibleIds.length > 0,
+    // 勾选变化/刷新时保留上一份 (同 symbol) 叠加线, 避免闪烁; 切股不透传上一只的线
+    placeholderData: (prev, prevQuery) => (prevQuery?.queryKey[2] === symbol ? prev : undefined),
+    staleTime: 30_000,
+    retry: 1,
+  })
+
+  const overlays = useMemo<IndicatorOverlay[]>(() => {
+    const res = series.data
+    if (!res || res.symbol !== symbol) return []
+    const out: IndicatorOverlay[] = []
+    for (const id of visibleIds) {
+      const meta = indicatorById.get(id)
+      const entry = res.indicators?.[id]
+      if (!meta || !entry) continue
+      const selected = meta.pane === 'main' ? visibleOutputs(layout, id) : null
+      const outputs = entry.outputs.filter(o => o.visible && (selected == null || selected.includes(o.key)))
+      if (outputs.length === 0) continue
+      out.push({ id, name: meta.name, pane: meta.pane, dates: res.dates, outputs })
+    }
+    return out
+  }, [series.data, symbol, visibleIds, indicatorById, layout])
+
+  const indicatorErrors = useMemo(() => {
+    const errs = series.data?.symbol === symbol ? series.data?.errors ?? {} : {}
+    return Object.entries(errs)
+      .filter(([id]) => visibleIds.includes(id))
+      .map(([id, msg]) => `${indicatorById.get(id)?.name ?? id}: ${msg}`)
+  }, [series.data, symbol, visibleIds, indicatorById])
+
   const toggleIndicator = useCallback((key: string) => {
-    setActiveIndicators(prev => prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key])
-  }, [])
+    updateLayout(prev => toggleSub(prev, key))
+  }, [updateLayout])
+  const toggleMain = useCallback((id: string, output: string) => {
+    updateLayout(prev => toggleMainOutput(prev, id, output))
+  }, [updateLayout])
 
   const updateVolumeCompare = useCallback((patch: Partial<VolumeCompareConfig>) => {
     setVolumeCompare(prev => {
@@ -180,12 +423,16 @@ export function StockDailyKChart({
     })
   }, [])
 
-  const activeSubDefs = activeIndicators
-    .map(key => SUB_CHARTS.find(s => s.key === key))
-    .filter((d): d is typeof SUB_CHARTS[number] => !!d)
-  let subExtraH = 0
-  activeSubDefs.forEach(def => { subExtraH += SUB_INFO_H + def.height })
-  if (activeSubDefs.length > 0) subExtraH += activeSubDefs.length * SUB_GAP + 14
+  // 与 EChartsCandlestick 同一套副图解析 (仅高度用, 系列由图表自建); 指标副图数据到达后才占位
+  const subPlaceholders = useMemo<SubChartDef[]>(
+    () => overlays.filter(o => o.pane === 'sub').map(o => ({
+      key: indicatorSubKey(o.id), label: o.name, height: INDICATOR_SUB_HEIGHT,
+      buildSeries: () => [], buildInfo: () => [],
+    })),
+    [overlays],
+  )
+  const activeSubDefs = resolveSubChartDefs(activeIndicators, subPlaceholders)
+  const subExtraH = activeSubDefs.length > 0 ? subChartsTotalHeight(activeSubDefs) + 14 : 0
   const chartHeight = height + subExtraH
 
   if (!symbol) return null
@@ -194,25 +441,39 @@ export function StockDailyKChart({
     <div className={className} style={{ minHeight: chartHeight }}>
       {showIndicatorControls && rows.length > 0 && (
         <div className="flex items-center gap-1.5 px-1 pb-0.5">
+          <MainIndicatorMenu
+            layout={layout}
+            showMA={showMA}
+            customGroups={customGroups}
+            customLoading={indicatorList.isLoading}
+            onToggle={toggleMain}
+          />
           {SUB_CHARTS.map(ind => (
             <ChartPill
               key={ind.key}
-              active={activeIndicators.includes(ind.key)}
+              active={layout.sub.includes(ind.key)}
               label={ind.label}
               activeClass="bg-accent/20 text-accent"
               onClick={() => toggleIndicator(ind.key)}
             />
           ))}
-          {OVERLAY_INDICATORS.map(ind => (
-            <ChartPill
-              key={ind.key}
-              active={activeIndicators.includes(ind.key)}
-              label={ind.label}
-              activeClass="bg-accent/20 text-accent"
-              onClick={() => toggleIndicator(ind.key)}
-            />
-          ))}
-          {activeIndicators.includes('vol') && (
+          {subIndicators.map(ind => {
+            const key = indicatorSubKey(ind.id)
+            return (
+              <ChartPill
+                key={key}
+                active={layout.sub.includes(key)}
+                label={ind.name}
+                activeClass="bg-accent/20 text-accent"
+                title={`副图指标 · ${ind.name}${ind.builtin ? ' (预设)' : ''}`}
+                onClick={() => toggleIndicator(key)}
+              />
+            )
+          })}
+          {visibleIds.length > 0 && series.isFetching && (
+            <span className="text-[10px] text-muted" role="status" aria-live="polite">指标计算中…</span>
+          )}
+          {layout.sub.includes('vol') && (
             <div className="ml-0.5 flex h-5 items-center gap-1.5 border-l border-border/70 pl-2">
               <span className="text-[10px] text-muted">量比</span>
               <button
@@ -266,6 +527,14 @@ export function StockDailyKChart({
           </div>
         </div>
       )}
+      {/* 指标失败不影响 K 线: 图照常渲染 (无叠加), 这里只给一行小提示 */}
+      {rows.length > 0 && visibleIds.length > 0 && (series.isError || indicatorErrors.length > 0) && (
+        <div className="px-1 pb-0.5 text-[10px] text-danger" role="alert">
+          {series.isError
+            ? `指标加载失败${series.data ? '（显示上次结果）' : ''}: ${(series.error as Error)?.message ?? ''}`
+            : `部分指标计算失败 · ${indicatorErrors.join('；')}`}
+        </div>
+      )}
       {kline.isLoading && <div className="text-sm text-muted py-4">加载中…</div>}
       {kline.isError && <div className="text-sm text-danger py-2">日K加载失败</div>}
       {!kline.isLoading && !kline.isError && (kline.data?.rows?.length ?? 0) > 0 && rows.length === 0 && (
@@ -279,6 +548,7 @@ export function StockDailyKChart({
           priceLines={priceLines}
           height={chartHeight - 22}
           showMA={showMA}
+          maLines={maLines}
           showInfoBar={showInfoBar}
           showMarkers={showMarkers}
           stockInfo={stockInfo}
@@ -290,6 +560,7 @@ export function StockDailyKChart({
           activeIndicators={activeIndicators}
           volumeCompare={volumeCompare}
           addedDate={showAddedMark ? addedDate : null}
+          overlays={overlays}
         />
       )}
     </div>

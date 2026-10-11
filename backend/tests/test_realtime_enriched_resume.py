@@ -67,6 +67,9 @@ def test_live_agg_uses_each_symbols_last_available_trading_state(tmp_path):
     latest = date(2026, 7, 29)
     repo = KlineRepository(DataStore(tmp_path))
     repo._enriched_history_cache = _historical_cache(latest)
+    # 与 _refresh_enriched_impl 同口径: 缓存按 300 自然日读取, 本地历史只有 100 天
+    # → 缓存即全量, 盘中窗口 (180 自然日) 直接复用缓存, 不降级读 parquet
+    repo._enriched_history_read_start = latest - timedelta(days=300)
 
     partition = tmp_path / "kline_daily_enriched" / f"date={latest.isoformat()}"
     partition.mkdir(parents=True)
@@ -312,3 +315,32 @@ def test_repository_restores_active_rows_missing_from_latest_enriched(tmp_path):
     resumed = restored.filter(pl.col("symbol") == "000820.SZ").row(0, named=True)
     assert resumed["signal_limit_up"] is True
     assert resumed["ma5"] is None
+
+
+@pytest.mark.parametrize(
+    ("partial_sum", "window_len", "expected"),
+    [
+        (1190.0, 119, (1190.0 + 10.2) / 120),  # 119 根历史 + 今日 = 满窗
+        (1190.0, 118, None),  # 历史差一根: 与全量 rolling_mean(120) 同口径置空
+        (None, 119, None),  # 旧 live_agg 无 MA120 部分和: 置空且不报错
+    ],
+)
+def test_realtime_enriched_ma120_from_partial_sum(partial_sum, window_len, expected):
+    today = date(2026, 7, 30)
+    state = _live_state().with_columns(pl.lit(window_len).alias("_window_len"))
+    if partial_sum is not None:
+        state = state.with_columns(pl.lit(partial_sum).alias("_ma120_partial_sum"))
+    today_rows = pl.DataFrame({
+        "symbol": ["600001.SH"], "date": [today],
+        "open": [10.1], "high": [10.2], "low": [10.0], "close": [10.2],
+        "volume": [1200.0], "amount": [12240.0], "prev_close": [10.0],
+    })
+
+    result = compute_enriched_today(state, _previous_enriched(), today_rows, None)
+
+    got = result["ma120"][0]
+    if expected is None:
+        assert got is None
+    else:
+        assert got == pytest.approx(expected, rel=1e-12)
+    assert "_ma120_partial_sum" not in result.columns

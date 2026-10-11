@@ -109,8 +109,14 @@ def get_options():
     from app.factors.registry import all_factors
 
     factor_groups: dict[str, list[dict[str, str]]] = {}
+    # 通达信自定义指标输出 (ind_*): 独立「自定义指标」分组, label = {指标名}.{输出名};
+    # 历史路径物化, 盘中单日快照缺列跳过 (indicatorFields 供前端提示降级)。
+    indicator_fields: list[dict[str, str]] = []
     for spec in all_factors():
         if spec.id in allowed:
+            continue
+        if spec.kind == "indicator":
+            indicator_fields.append({"key": spec.id, "label": spec.label})
             continue
         label = spec.label
         if spec.warmup_bars > 1:
@@ -121,6 +127,9 @@ def get_options():
     for group_label, group_fields in factor_groups.items():
         groups.append({"key": f"factor:{group_label}", "label": f"因子 · {group_label}", "fields": group_fields})
         fields.extend(group_fields)
+    if indicator_fields:
+        groups.append({"key": "indicator", "label": "自定义指标", "fields": indicator_fields})
+        fields.extend(indicator_fields)
 
     # string 扩展字段 (概念/行业归属等): 只进信号条件, 不注册为因子。
     # stringFields 标记 + 独立分组, 前端据此切换运算符 (包含/等于/不等于)
@@ -139,6 +148,8 @@ def get_options():
         "maxDays": custom_signals.MAX_DAYS,
         "operators": [">", ">=", "<", "<=", "==", "!="],
         "stringFields": [e["key"] for e in str_entries],
+        # 自定义指标字段: 盘中实时预警不支持 (单日快照无历史), 收盘后计算
+        "indicatorFields": [e["key"] for e in indicator_fields],
         "stringOperators": ["contains", "==", "!="],
         "kinds": [
             {"key": "entry", "label": "入场"},

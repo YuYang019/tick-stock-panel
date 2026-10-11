@@ -22,6 +22,7 @@ from app.api import (
     ext_data,
     factors,
     financials,
+    indicators,
     indices,
     intraday,
     kline,
@@ -117,6 +118,17 @@ async def _application_lifespan(app: FastAPI):
             logger.info("custom factors loaded: %s", len(loaded_factors))
     except Exception as exc:  # noqa: BLE001
         logger.warning("custom factors load failed: %s", exc)
+    # 通达信自定义指标: 预设种子 + 输出线注册为 kind=indicator 因子 (ind_*); 失败只告警
+    try:
+        from app.indicators.tdx import factors as _indicator_factors
+        from app.indicators.tdx import store as _indicator_store
+
+        seeded_indicators = _indicator_store.seed_if_empty(store.data_dir)
+        loaded_indicators = _indicator_factors.load_into_registry(store.data_dir)
+        if seeded_indicators or loaded_indicators:
+            logger.info("indicators seeded=%d loaded=%d", seeded_indicators, len(loaded_indicators))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("indicators load failed: %s", exc)
     from app.services.mining_manager import MiningJobManager
 
     mining_manager = MiningJobManager(store.data_dir)
@@ -539,6 +551,7 @@ app.include_router(watchlist.router)
 app.include_router(screener.router)
 app.include_router(backtest.router)
 app.include_router(factors.router)
+app.include_router(indicators.router)
 app.include_router(mining.router)
 app.include_router(intraday.router)
 app.include_router(indices.router)

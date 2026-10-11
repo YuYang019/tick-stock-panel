@@ -16,8 +16,12 @@ router = APIRouter(prefix="/api/factors", tags=["factors"])
 
 @router.get("")
 def list_factors(asset_type: str | None = Query(default=None, pattern="^(stock|etf)$")) -> dict:
-    """注册表因子列表; asset_type 过滤适用资产 (财务因子仅股票)。"""
-    specs = all_factors(asset_type=asset_type)
+    """注册表因子列表; asset_type 过滤适用资产 (财务因子仅股票)。
+
+    kind=indicator (通达信指标输出) 不进因子库列表: 由指标库页管理,
+    在信号字段选项 (/api/custom-signals/options) 中以「自定义指标」分组出现。
+    """
+    specs = [spec for spec in all_factors(asset_type=asset_type) if spec.kind != "indicator"]
     return {
         "factors": [
             {
@@ -382,6 +386,9 @@ def delete_custom_factor(factor_id: str, request: Request, force: bool = Query(d
     data_dir = _data_dir(request)
     from app.factors.registry import get_factor
 
+    existing = get_factor(factor_id)
+    if existing is not None and existing.kind == "indicator":
+        raise HTTPException(status_code=400, detail="指标输出因子请在指标库中删除对应指标")
     # 引用检查必须排在存在性判定之前: 下面用来探测「盘上是否有定义」的
     # store.delete_one 本身就会删文件, 反过来会出现「拒绝删除」但定义已被删掉。
     references = _find_references(data_dir, factor_id)

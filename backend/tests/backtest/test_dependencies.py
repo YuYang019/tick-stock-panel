@@ -233,3 +233,25 @@ def test_matrix_native_resolves_raw_fields_and_protocol_warmup_without_indicator
     assert {"open", "high", "low", "close", "volume", "amount"} <= set(plan.base_columns)
     assert plan.warmup_bars == 120
     assert plan.full_feature_fallback is False
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    [
+        ({}, 60),  # 无长窗口指标: 默认预热不变
+        ({"required_features": frozenset({"ma120"})}, 120),
+        ({"meta": {"id": "deps", "scoring": {"ma120_bias": 1.0}, "order_by": "score"}}, 120),
+    ],
+)
+def test_resolver_warmup_covers_ma120(overrides, expected):
+    """引用 ma120 (直接列或 ma120_bias 评分) 的策略预热须满 120 根, 否则回测前段为 null。"""
+    plan = StrategyDependencyResolver().resolve(
+        _strategy(**overrides),
+        params={"rsi_max": 30},
+        basic_filter={"enabled": False},
+        entry_signals=[],
+        exit_signals=[],
+    )
+    assert plan.warmup_bars == expected
+    if expected == 120:
+        assert "ma120" in plan.indicator_columns

@@ -72,15 +72,21 @@ def enriched_dirname(asset_type: str) -> str:
     return "kline_etf_enriched" if asset_type == "etf" else "kline_daily_enriched"
 
 
-# 盘中递推状态的最长窗口 (交易日): MA60 部分和 tail(59)、60 日动量 tail(60)
-_LIVE_AGG_WINDOW_BARS = 60
+# 盘中递推状态的最长窗口 (交易日): MA120 部分和 tail(119); MA60/60 日极值/动量 tail(59~60)
+_LIVE_AGG_WINDOW_BARS = 120
+# 窗口的自然日起点 (latest - N 天): 180 自然日通常含 ~123 个交易日
+_LIVE_AGG_CALENDAR_DAYS = 180
+# 单标的日K即时计算的预热自然日: 200 自然日 ≈ 137 个交易日, 长假后仍 ≥ 120 (MA120 满窗)
+_DAILY_WARMUP_DAYS = 200
+# 降级路径多读的自然日: 再按交易日计数确定起点 (长假前后 180 自然日可能不足 120 个交易日)
+_LIVE_AGG_EXTRA_READ_DAYS = 60
 
 
 def _live_agg_window_start(dates: pl.Series, latest: date, calendar_start: date) -> date:
-    """盘中递推历史窗口起点: 自然日起点与「最近 60 个交易日」起点取较早者。
+    """盘中递推历史窗口起点: 自然日起点与「最近 120 个交易日」起点取较早者。
 
-    自然日 90 天通常含 62~65 个交易日, 但春节/国庆长假前后只有 57~59 个,
-    tail(59)/tail(60) 会取到残缺窗口 (与 get_enriched_history 按交易日计数同理)。
+    自然日 180 天通常含 ~123 个交易日, 但春节/国庆长假前后可能不足 120 个,
+    tail(119)/tail(60) 会取到残缺窗口 (与 get_enriched_history 按交易日计数同理)。
     """
     trading = dates.filter(dates <= latest).unique().sort()
     if trading.len() >= _LIVE_AGG_WINDOW_BARS:
@@ -370,6 +376,8 @@ class KlineRepository:
         # 完整 enriched 历史 (含所有指标, 供 filter_history 策略使用)
         self._enriched_history_cache: pl.DataFrame | None = None  # ~100万行
         self._enriched_history_start: date | None = None
+        # 构建历史缓存时的读取起点: 缓存最早日期晚于它说明本地数据本就更短 (缓存即全量)
+        self._enriched_history_read_start: date | None = None
         self._enriched_history_generation: str | None = None
         self._index_instruments_cache: pl.DataFrame | None = None
         self._etf_enriched_cache: pl.DataFrame | None = None
@@ -538,6 +546,7 @@ class KlineRepository:
         self._enriched_cache_date = None
         self._enriched_history_cache = None
         self._enriched_history_start = None
+        self._enriched_history_read_start = None
         self._enriched_history_generation = None
         self._live_agg_cache = None
         self._live_agg_cache_date = None
@@ -650,6 +659,7 @@ class KlineRepository:
                         )
                     self._enriched_history_cache = df_full
                     self._enriched_history_start = df_full["date"].min()
+                    self._enriched_history_read_start = start_full
                     self._enriched_history_generation = refresh_generation
                     logger.info("enriched 历史缓存: %d rows, %s ~ %s",
                                 len(df_full), self._enriched_history_start, latest)
@@ -769,14 +779,20 @@ class KlineRepository:
 
         started = time.perf_counter()
         logger.info("live agg build start: latest=%s", latest)
-        start_60d = latest - timedelta(days=90)  # 日历90天 ≈ 60个交易日
+        window_calendar_start = latest - timedelta(days=_LIVE_AGG_CALENDAR_DAYS)
         # EMA12/26、RSI 递推状态的暖机来源; None = 与窗口切片 df_hist 同源 (降级路径)
         ewm_history: pl.DataFrame | None = None
 
         # 优先使用已有的历史缓存 (避免重复 scan_parquet + compute_indicators)
         if self._enriched_history_cache is not None and not self._enriched_history_cache.is_empty():
             hist_all = self._enriched_history_cache
-            if "date" in hist_all.columns and hist_all["date"].min() <= start_60d:
+            # 缓存覆盖窗口: 最早日期早于窗口起点, 或缓存读取起点已早于窗口起点
+            # (本地历史本就短于窗口, 降级读 parquet 也拿不到更多, 不必重算)
+            read_start = getattr(self, "_enriched_history_read_start", None)
+            if "date" in hist_all.columns and (
+                hist_all["date"].min() <= window_calendar_start
+                or (read_start is not None and read_start <= window_calendar_start)
+            ):
                 # 从历史缓存中提取所需列 (历史缓存已有指标列)
                 base_cols = [
                     "symbol", "date", "open", "high", "low", "close", "volume",
@@ -786,7 +802,7 @@ class KlineRepository:
                 needed = [c for c in base_cols if c in hist_all.columns]
                 step = time.perf_counter()
                 logger.info("live agg step start: slice history cache")
-                window_start = _live_agg_window_start(hist_all["date"], latest, start_60d)
+                window_start = _live_agg_window_start(hist_all["date"], latest, window_calendar_start)
                 df_hist = hist_all.select(needed).filter(
                     (pl.col("date") >= window_start) & (pl.col("date") <= latest)
                 ).sort(["symbol", "date"])
@@ -807,14 +823,14 @@ class KlineRepository:
                 )
                 agg_a = state_source.select(existing_state)
                 # ema5~ema60 / macd_dea 等状态取自完整历史缓存; _ema12/_ema26 与 RSI 也必须
-                # 同源暖机, 只用 90 天窗口递推会与 macd_dea、盘后全量口径不一致
+                # 同源暖机, 只用窗口切片递推会与 macd_dea、盘后全量口径不一致
                 ewm_history = hist_all.select("symbol", "date", "close")
             else:
                 df_hist = pl.DataFrame()
                 agg_a = pl.DataFrame()
         else:
             # 降级: 读 parquet + compute_indicators
-            df_hist, agg_a = self._build_live_agg_from_parquet(latest, start_60d)
+            df_hist, agg_a = self._build_live_agg_from_parquet(latest, window_calendar_start)
 
         if df_hist.is_empty():
             self._live_agg_cache = pl.DataFrame()
@@ -907,7 +923,7 @@ class KlineRepository:
         if len(consec_cols) != 3:
             lf = (
                 scan_enriched_parquet(self._enriched_glob)
-                .filter((pl.col("date") >= start_60d) & (pl.col("date") <= latest))
+                .filter((pl.col("date") >= window_calendar_start) & (pl.col("date") <= latest))
                 .sort(["symbol", "date"])
             )
             consec_cols = [
@@ -940,6 +956,7 @@ class KlineRepository:
                 pl.col("close").tail(19).sum().alias("_ma20_partial_sum"),
                 pl.col("close").tail(29).sum().alias("_ma30_partial_sum"),
                 pl.col("close").tail(59).sum().alias("_ma60_partial_sum"),
+                pl.col("close").tail(119).sum().alias("_ma120_partial_sum"),
 
                 pl.col("close").tail(19).sum().alias("_boll_partial_sum"),
                 (pl.col("close").tail(19) ** 2).sum().alias("_boll_partial_sq_sum"),
@@ -991,16 +1008,18 @@ class KlineRepository:
             pass
         return latest
 
-    def _build_live_agg_from_parquet(self, latest: date, start_60d: date) -> tuple[pl.DataFrame, pl.DataFrame]:
+    def _build_live_agg_from_parquet(
+        self, latest: date, window_calendar_start: date,
+    ) -> tuple[pl.DataFrame, pl.DataFrame]:
         """降级路径: 从 parquet 读取数据并计算指标 (当 _enriched_history_cache 不可用时)。"""
         from datetime import timedelta
 
         from app.indicators.pipeline import compute_indicators
 
-        # 多读一段自然日, 再按交易日计数确定窗口起点 (长假前后 90 个自然日不足 60 个交易日)
+        # 多读一段自然日, 再按交易日计数确定窗口起点 (长假前后 180 个自然日可能不足 120 个交易日)
         lf = (
             scan_enriched_parquet(self._enriched_glob)
-            .filter(pl.col("date") >= start_60d - timedelta(days=60))
+            .filter(pl.col("date") >= window_calendar_start - timedelta(days=_LIVE_AGG_EXTRA_READ_DAYS))
             .filter(pl.col("date") <= latest)
             .sort(["symbol", "date"])
         )
@@ -1013,7 +1032,7 @@ class KlineRepository:
 
         if df_hist.is_empty():
             return df_hist, pl.DataFrame()
-        window_start = _live_agg_window_start(df_hist["date"], latest, start_60d)
+        window_start = _live_agg_window_start(df_hist["date"], latest, window_calendar_start)
         df_hist = df_hist.filter(pl.col("date") >= window_start)
 
         df_with_indicators = compute_indicators(df_hist)
@@ -1458,7 +1477,7 @@ class KlineRepository:
         from datetime import timedelta
 
         # 快路径: 请求的列全是 parquet 直接存储的列 (如迷你蜡烛图只要 OHLCV) →
-        # scan + 列下推直接返回, 跳过 warmup(150天) 与 _compute_enriched_range 全套指标计算。
+        # scan + 列下推直接返回, 跳过 warmup(_DAILY_WARMUP_DAYS) 与 _compute_enriched_range 全套指标计算。
         # 仍用 enriched_latest 缓存覆盖最新日 (盘中更准), 只保留请求列。
         # 试探 scan 仅读请求的列; 缺列时回退到下方完整计算路径 (代价仅一次轻量 scan)。
         if columns:
@@ -1474,11 +1493,11 @@ class KlineRepository:
                             df = pl.concat([df.select(common_cols), cached_part.select(common_cols)])
                 return df
 
-        # 扩展范围用于指标预热 (MA60 需要 ~60 交易日 ≈ 120 日历日)
-        warmup_start = start - timedelta(days=150)
+        # 扩展范围用于指标预热 (MA120 需要 120 交易日, 见 _DAILY_WARMUP_DAYS)
+        warmup_start = start - timedelta(days=_DAILY_WARMUP_DAYS)
 
         # 优先复用预计算 enriched 历史缓存 (300 天全指标, 与回测引擎同源):
-        # 个股对话框打开时本接口每个行情 tick 被调一次, 逐请求 150 天扫描 + 全套
+        # 个股对话框打开时本接口每个行情 tick 被调一次, 逐请求 200 天扫描 + 全套
         # 指标重算是热路径上最大的重复计算。缓存最新日可能不含当日实时行,
         # 由下方 get_enriched_latest 覆盖逻辑补齐; 覆盖不足时回退单股计算路径。
         df = pl.DataFrame()
@@ -1574,14 +1593,14 @@ class KlineRepository:
         from datetime import timedelta
 
         # 快路径: 若请求的列全部是 parquet 直接存储的列 (如迷你蜡烛图只要 OHLCV),
-        # 直接 scan + 列下推返回, 跳过 warmup(150天) 与 _compute_index_enriched_range 全套指标计算。
+        # 直接 scan + 列下推返回, 跳过 warmup(_DAILY_WARMUP_DAYS) 与 _compute_index_enriched_range 全套指标计算。
         # 试探 scan 仅读请求的列, 缺列时回退到下方完整计算路径 (代价仅一次轻量 scan)。
         if columns:
             df = self._scan_index_daily_symbol(symbol, start, end, columns)
             if not df.is_empty() and all(c in df.columns for c in columns):
                 return df
 
-        warmup_start = start - timedelta(days=150)
+        warmup_start = start - timedelta(days=_DAILY_WARMUP_DAYS)
         df = self._scan_index_daily_symbol(symbol, warmup_start, end, None)
         if not df.is_empty():
             df = self._compute_index_enriched_range(df)
@@ -1608,7 +1627,7 @@ class KlineRepository:
             if not df.is_empty() and all(c in df.columns for c in columns):
                 return df
 
-        warmup_start = start - timedelta(days=150)
+        warmup_start = start - timedelta(days=_DAILY_WARMUP_DAYS)
         df = self._scan_etf_daily_symbol(symbol, warmup_start, end, None)
         if df.is_empty():
             # 旧版 ETF 曾存入 kline_index_enriched；没有独立数据时回退读取。

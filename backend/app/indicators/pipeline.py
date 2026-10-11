@@ -153,6 +153,7 @@ ENRICHED_COLUMNS: dict[str, dict[str, str]] = {
     "ma20":                    "20日简单均线",
     "ma30":                    "30日简单均线",
     "ma60":                    "60日简单均线(季线)",
+    "ma120":                   "120日简单均线(半年线)",
     # ── 指数均线 EMA ─────────────────────────────────────
     "ema5":                    "5日指数均线",
     "ema10":                   "10日指数均线",
@@ -208,7 +209,7 @@ ENRICHED_COLUMNS: dict[str, dict[str, str]] = {
 ENRICHED_COLUMNS_BY_CATEGORY: dict[str, list[str]] = {
     "storage":  [k for k in ENRICHED_COLUMNS if k in ENRICHED_STORAGE_COLS],
     "basic":    ["prev_close", "change_pct", "change_amount", "amplitude"],
-    "ma":       ["ma5", "ma10", "ma20", "ma30", "ma60"],
+    "ma":       ["ma5", "ma10", "ma20", "ma30", "ma60", "ma120"],
     "ema":      ["ema5", "ema10", "ema20", "ema30", "ema60"],
     "macd":     ["macd_dif", "macd_dea", "macd_hist"],
     "boll":     ["boll_upper", "boll_lower"],
@@ -333,7 +334,7 @@ _INDICATOR_DEPS: dict[str, set[str]] = {
 
 # compute_indicators 可产出的全部指标/临时列 (needed=None 时即为此全集, 行为不变)
 _ALL_INDICATOR_COLS: frozenset[str] = frozenset({
-    "prev_close", "ma5", "ma10", "ma20", "ma30", "ma60",
+    "prev_close", "ma5", "ma10", "ma20", "ma30", "ma60", "ma120",
     "ema5", "ema10", "ema20", "ema30", "ema60", "_ema12", "_ema26",
     "_boll_std", "_kdj_ln", "_kdj_hn", "_tr", "vol_ma5", "vol_ma10",
     "_vol_ma5", "high_60d", "low_60d",
@@ -404,6 +405,8 @@ def compute_indicators(
         _p1.append(pl.col("close").rolling_mean(30).over("symbol").alias("ma30"))
     if "ma60" in want:
         _p1.append(pl.col("close").rolling_mean(60).over("symbol").alias("ma60"))
+    if "ma120" in want:
+        _p1.append(pl.col("close").rolling_mean(120).over("symbol").alias("ma120"))
     if "ema5" in want:
         _p1.append(pl.col("close").ewm_mean(alpha=_ema_alpha(5), adjust=False).over("symbol").alias("ema5"))
     if "ema10" in want:
@@ -596,6 +599,15 @@ _LIMIT_PRICE_COLUMNS = frozenset({"limit_up_price", "limit_down_price"})
 INDICATOR_COLUMNS: frozenset[str] = frozenset(
     col for col in _ALL_INDICATOR_COLS if not col.startswith("_")
 )
+
+# 回看窗口超过回测默认预热 (60 根) 的指标列 → 满窗所需 K 线根数。
+# 引用这些列的策略/信号据此加大预热, 否则回测前段该列为 null (与盘后全量口径不一致)。
+INDICATOR_WARMUP_BARS: dict[str, int] = {"ma120": 120}
+
+
+def indicator_warmup_bars(columns) -> int:
+    """列集合中长窗口指标所需的最大预热根数; 无长窗口指标返回 1。"""
+    return max((INDICATOR_WARMUP_BARS.get(str(c), 1) for c in columns), default=1)
 
 
 def get_signal_dependencies() -> dict[str, frozenset[str]]:
@@ -1416,6 +1428,27 @@ def _sweep_stale_staging(data_dir: Path) -> None:
             pass
 
 
+def _materialize_cross_section_signal_factors(df: pl.DataFrame) -> pl.DataFrame:
+    """自定义信号引用的截面 RS 因子在全市场帧上一次算好 (只依赖 OHLCV, 可先于指标计算)。"""
+    try:
+        from app.factors import relative_strength as rs
+        from app.strategy import custom_signals
+
+        roots: set[str] = set()
+        for deps in custom_signals.expression_dependencies(_get_custom_signal_exprs()).values():
+            roots |= deps
+        wanted = {
+            name for name in roots
+            if name in rs.CROSS_SECTION_FACTOR_IDS or name.startswith("rps_ind_")
+        } - set(df.columns)
+        if not wanted:
+            return df
+        return rs.materialize_relative_strength(df, sorted(wanted))
+    except Exception as e:  # noqa: BLE001 — 失败退回批内路径 (守卫置空, 信号不触发), 不阻断主流程
+        logger.warning("cross-section RS pre-materialize failed: %s", e)
+        return df
+
+
 def compute_enriched_history_window(
     df_hist: pl.DataFrame,
     data_dir: Path,
@@ -1437,6 +1470,10 @@ def compute_enriched_history_window(
     if sym_batch is None:
         rows_per_sym = max(1, df_hist.height // max(len(symbols), 1))
         sym_batch = _adaptive_sym_batch(2000, rows_per_sym)
+    if len(symbols) > sym_batch:
+        # 截面因子 (rps_* / 行业 RPS) 要全市场同日排名, 批内排名是错的 (被覆盖率守卫置空)。
+        # 信号引用到的这类列在分批前对整帧物化一次, 批内 materialize 见列已存在即跳过。
+        df_hist = _materialize_cross_section_signal_factors(df_hist)
     parts: list[pl.DataFrame] = []
     for bs in range(0, len(symbols), sym_batch):
         batch = symbols[bs:bs + sym_batch]
@@ -2010,6 +2047,13 @@ def compute_enriched_today(
         ((pl.col("_ma30_partial_sum") + pl.col("close")) / 30).alias("ma30"),
         ((pl.col("_ma60_partial_sum") + pl.col("close")) / 60).alias("ma60"),
     ])
+    # MA120: 旧 live_agg 未带该部分和时置 null (与窗口不满同口径), 不报错
+    if "_ma120_partial_sum" in df.columns:
+        df = df.with_columns(
+            ((pl.col("_ma120_partial_sum") + pl.col("close")) / 120).alias("ma120")
+        )
+    else:
+        df = df.with_columns(pl.lit(None, dtype=pl.Float64).alias("ma120"))
 
     # ---- Bollinger ----
     boll_sum = pl.col("_boll_partial_sum") + pl.col("close")
@@ -2123,7 +2167,7 @@ def compute_enriched_today(
     # live_agg 的部分和 / 极值 / N 日前收盘用 tail(N) 取, 历史 K 线不足 N 根 (次新股) 时
     # 取到的是残缺窗口; 全量 rolling_*(N) / shift(N) 窗口不满为空, 按窗口内实际根数同口径置空。
     min_history_bars = {
-        "ma5": 4, "ma10": 9, "ma20": 19, "ma30": 29, "ma60": 59,
+        "ma5": 4, "ma10": 9, "ma20": 19, "ma30": 29, "ma60": 59, "ma120": 119,
         "vol_ma5": 4, "vol_ma10": 9, "vol_ratio_5d": 5,
         "boll_upper": 19, "boll_lower": 19, "high_60d": 59, "low_60d": 59,
         "momentum_3d": 3, "momentum_5d": 5, "momentum_10d": 10,
@@ -2157,7 +2201,7 @@ def compute_enriched_today(
     drop_cols = [
         "close_right", "high_right", "low_right", "_prev_close_raw",
         "_ma5_partial_sum", "_ma10_partial_sum", "_ma20_partial_sum",
-        "_ma30_partial_sum", "_ma60_partial_sum",
+        "_ma30_partial_sum", "_ma60_partial_sum", "_ma120_partial_sum",
         "_boll_partial_sum", "_boll_partial_sq_sum",
         "_high_59d", "_low_59d",
         "_close_5d_ago", "_close_10d_ago", "_close_20d_ago",

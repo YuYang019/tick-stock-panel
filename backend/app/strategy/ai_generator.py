@@ -57,7 +57,7 @@ _MATRIX_SCORING_FIELDS = frozenset({
     "open", "high", "low", "close", "volume", "amount", "turnover_rate",
     "total_shares", "float_shares", "consecutive_limit_ups",
     "consecutive_limit_downs", "prev_close", "change_pct", "change_amount",
-    "amplitude", "ma5", "ma10", "ma20", "ma30", "ma60", "boll_upper",
+    "amplitude", "ma5", "ma10", "ma20", "ma30", "ma60", "ma120", "boll_upper",
     "boll_lower", "high_60d", "low_60d", "momentum_5d", "momentum_10d",
     "momentum_20d", "momentum_30d", "momentum_60d", "annual_vol_20d",
     "rsi_6", "rsi_14", "rsi_24", "vol_ratio_5d", "ma20_bias",

@@ -405,8 +405,6 @@ def get_daily(
     - ext_columns: 可选，动态 LEFT JOIN 扩展数据表，结果平铺到 stock_info.ext 下
       (key 为 "{config_id}__{field_name}")，供日K信息条等场景展示自定义字段
     """
-    import polars as pl
-
     repo = request.app.state.repo
     # 未传 end_date 时用北京今天: 实时注入只在内存缓存命中时补当日 K,
     # 缓存冷时 parquet 当日行能否进结果取决于这个窗口右端。
@@ -425,25 +423,15 @@ def get_daily(
 
     if df.is_empty():
         try:
-            raw = kline_sync.sync_daily_batch([symbol], count=days + 30)
+            enriched = live_enriched_frame(request, symbol, count=days + 30)
         except Exception as e:
             raise HTTPException(status_code=502, detail=f"TickFlow fetch failed: {e}") from e
-        if raw.is_empty():
+        if enriched.is_empty():
             return _gzip_payload(
                 request,
                 {"symbol": symbol, "name": stock_name, "stock_info": stock_info, "rows": []},
                 pref_key="daily_batch_compress",
             )
-        # 拉除权因子做前复权 (Starter+ 有权限), 否则空 df → compute_enriched 退回未复权
-        factors = pl.DataFrame()
-        capset = getattr(request.app.state, "capabilities", None)
-        try:
-            from app.tickflow.capabilities import Cap
-            if capset and capset.has(Cap.ADJ_FACTOR):
-                factors = kline_sync.fetch_adj_factor_single(symbol)
-        except Exception as e:  # noqa: BLE001
-            logger.debug("单股除权因子拉取失败 %s: %s", symbol, e)
-        enriched = compute_enriched(raw, factors=factors)
         rows = enriched.tail(days).to_dicts()
         # 即使 live 模式也尝试追加实时蜡烛
         rows = _maybe_inject_live_candle(request, symbol, rows, asset_type)
@@ -454,10 +442,8 @@ def get_daily(
             pref_key="daily_batch_compress",
         )
 
-    rows = df.to_dicts()
-
     # 追加/覆盖今日实时蜡烛
-    rows = _maybe_inject_live_candle(request, symbol, rows, asset_type)
+    rows = daily_rows_with_live(request, symbol, asset_type, df)
 
     resp = {"symbol": symbol, "name": stock_name, "stock_info": stock_info, "rows": rows, "source": "enriched"}
     return _gzip_payload(
@@ -465,6 +451,38 @@ def get_daily(
         _attach_ext(resp, repo, symbol, ext_columns),
         pref_key="daily_batch_compress",
     )
+
+
+def live_enriched_frame(request: Request, symbol: str, count: int):
+    """本地无该标的日K时 (Free 用户/未同步): 实时拉 count 根 + 本地算 enriched。
+
+    /daily 与指标序列共用, 保证图上 K 线与指标线来自同一份数据。拉取失败向上抛出。
+    """
+    import polars as pl
+
+    raw = kline_sync.sync_daily_batch([symbol], count=count)
+    if raw.is_empty():
+        return raw
+    # 拉除权因子做前复权 (Starter+ 有权限), 否则空 df → compute_enriched 退回未复权
+    factors = pl.DataFrame()
+    capset = getattr(request.app.state, "capabilities", None)
+    try:
+        from app.tickflow.capabilities import Cap
+        if capset and capset.has(Cap.ADJ_FACTOR):
+            factors = kline_sync.fetch_adj_factor_single(symbol)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("单股除权因子拉取失败 %s: %s", symbol, e)
+    return compute_enriched(raw, factors=factors)
+
+
+def daily_rows_with_live(request: Request, symbol: str, asset_type: str, df) -> list[dict]:
+    """enriched 日K帧 → rows, 并合并当日实时蜡烛 (追加/覆盖)。
+
+    /api/kline/daily 与 /api/indicators/series|preview 共用: 两处的日期行
+    必须一一对齐 (同一读取 + 同一实时合并), 禁止各自实现。
+    """
+    rows = df.to_dicts() if not df.is_empty() else []
+    return _maybe_inject_live_candle(request, symbol, rows, asset_type)
 
 
 def _attach_ext(resp: dict, repo, symbol: str, ext_columns: Optional[str]) -> dict:
@@ -568,7 +586,7 @@ def _latest_live_candle(
         "change_pct": q.get("change_pct"),
         "is_live": True,
     }
-    for key in ("ma5", "ma10", "ma20", "ma30", "ma60",
+    for key in ("ma5", "ma10", "ma20", "ma30", "ma60", "ma120",
                 "macd_dif", "macd_dea", "macd_hist",
                 "kdj_k", "kdj_d", "kdj_j",
                 "boll_upper", "boll_lower",

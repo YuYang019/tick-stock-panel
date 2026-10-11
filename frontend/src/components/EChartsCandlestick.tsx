@@ -1,6 +1,15 @@
 import { useEffect, useRef, useCallback, useMemo } from 'react'
 import { chartTheme, getTheme, useTheme } from '@/lib/theme'
 import { fmtPct } from '@/lib/format'
+import { DEFAULT_MA_LINES, MA_OUTPUTS, indicatorSubKey, type MaKey } from '@/lib/chartLayout'
+import {
+  alignOverlays,
+  escapeHtml,
+  overlayInfoItems,
+  overlayToEChartsSeries,
+  type AlignedOutput,
+  type IndicatorOverlay,
+} from '@/lib/indicatorOverlay'
 import * as echarts from 'echarts'
 import type { ECharts, EChartsOption } from 'echarts'
 
@@ -14,7 +23,9 @@ export interface OHLC {
   ma5?: number | null
   ma10?: number | null
   ma20?: number | null
+  ma30?: number | null
   ma60?: number | null
+  ma120?: number | null
   macd_dif?: number | null
   macd_dea?: number | null
   macd_hist?: number | null
@@ -319,6 +330,52 @@ export const OVERLAY_INDICATORS: { key: string; label: string }[] = [
   { key: 'boll', label: 'BOLL' },
 ]
 
+export type { IndicatorOverlay } from '@/lib/indicatorOverlay'
+
+/** 自定义副图指标高度 (与 MACD/RSI/KDJ 一致) */
+export const INDICATOR_SUB_HEIGHT = 72
+
+/** 自定义副图指标 → 动态 SubChartDef (key = `ind:{id}`); dates 为图表日期轴, 用于信息栏按日期取值 */
+export function buildIndicatorSubChartDef(
+  id: string,
+  label: string,
+  outputs: readonly AlignedOutput[],
+  dates: readonly string[],
+): SubChartDef {
+  const indexOf = new Map<string, number>()
+  dates.forEach((d, i) => indexOf.set(d, i))
+  return {
+    key: indicatorSubKey(id),
+    label,
+    height: INDICATOR_SUB_HEIGHT,
+    buildSeries: data => overlayToEChartsSeries(outputs, data),
+    buildInfo: d => {
+      if (!d) return []
+      const idx = indexOf.get(d.date)
+      return idx == null ? [] : overlayInfoItems(outputs, idx)
+    },
+  }
+}
+
+/**
+ * 按 activeIndicators 顺序解析副图定义: 内置 SUB_CHARTS + 动态指标副图。
+ * 未知 key (指标已删除/数据尚未到达) 直接跳过, 不占位。
+ */
+export function resolveSubChartDefs(keys: readonly string[], extra: readonly SubChartDef[] = []): SubChartDef[] {
+  const out: SubChartDef[] = []
+  for (const key of keys) {
+    const def = SUB_CHARTS.find(s => s.key === key) ?? extra.find(s => s.key === key)
+    if (def) out.push(def)
+  }
+  return out
+}
+
+/** 副图区总高度 (信息条 + 图 + 间距); StockDailyKChart 预留容器高度与本组件布局共用 */
+export function subChartsTotalHeight(defs: readonly SubChartDef[]): number {
+  if (defs.length === 0) return 0
+  return defs.reduce((h, def) => h + INFO_BAR_H + def.height, 0) + defs.length * SUB_GAP_PX
+}
+
 interface Props {
   data: OHLC[]
   markers?: ChartMarker[]
@@ -326,6 +383,8 @@ interface Props {
   priceLines?: ChartPriceLine[]
   height?: number
   showMA?: boolean
+  /** 可见均线 (showMA 为总开关); 缺省为 MA5/10/20/60 */
+  maLines?: readonly MaKey[]
   showInfoBar?: boolean
   showMarkers?: boolean
   onToggleMarkers?: () => void
@@ -342,6 +401,12 @@ interface Props {
   volumeCompare?: VolumeCompareConfig
   /** 加入自选日 (北京时间 YYYY-MM-DD); 有值且落在当前区间内时, 主图画一条「自选」竖虚线 */
   addedDate?: string | null
+  /**
+   * 通达信自定义指标覆盖层: pane=main 画在 K 线主图; pane=sub 以 `ind:{id}` 作为副图 key,
+   * 需同时出现在 activeIndicators 中才渲染 (顺序随 activeIndicators)。按日期对齐 data。
+   * 不传时行为与改造前一致。
+   */
+  overlays?: readonly IndicatorOverlay[]
 }
 
 // 序列颜色 (双主题通用); 画布轴/网格/文字等主题相关色走 CT() 动态取
@@ -350,12 +415,35 @@ const THEME = {
   bear: '#2D9B65',
   bullAlpha: 'rgba(240,68,56,0.7)',
   bearAlpha: 'rgba(18,183,106,0.7)',
-  ma5: '#A1A1AA',
-  ma10: '#3B82F6',
-  ma20: '#F97316',
-  ma60: '#8B5CF6',
   bg: 'transparent',
 }
+
+/** 信息栏第二行: 可见均线 + BOLL + 主图自定义指标当前值 (悬停与初始渲染共用) */
+function maInfoRowHTML(
+  d: OHLC,
+  maLines: readonly MaKey[],
+  showBoll: boolean,
+  overlayOutputs: readonly AlignedOutput[] = [],
+  idx = -1,
+): string {
+  let html = `<div style="display:flex;align-items:center;gap:10px;padding:0 8px;font:11px 'JetBrains Mono',monospace;select:none;min-height:20px;flex-wrap:wrap">`
+  for (const ma of MA_OUTPUTS) {
+    const v = d[ma.key]
+    if (maLines.includes(ma.key) && v != null) html += `<span style="color:${ma.color}">${ma.label}:${Number(v).toFixed(2)}</span>`
+  }
+  if (showBoll && d.boll_upper != null) {
+    html += `<span style="color:#E879F9">BOLL:${Number(d.boll_upper).toFixed(2)}/${Number(d.ma20).toFixed(2)}/${Number(d.boll_lower).toFixed(2)}</span>`
+  }
+  if (idx >= 0) {
+    for (const item of overlayInfoItems(overlayOutputs, idx)) {
+      html += `<span style="color:${item.color}">${escapeHtml(item.label)}:${item.value}</span>`
+    }
+  }
+  return html + `</div>`
+}
+
+/** ECharts rich text 以 {style|text} 解析, 用户输出名中的 {}| 需去掉 */
+const richSafe = (s: string) => s.replace(/[{}|]/g, '')
 
 /** 当前主题的图表调色板 (buildOption/信息栏在渲染时调用; 主题切换由组件 effect 触发重建)。 */
 const CT = () => chartTheme(getTheme())
@@ -374,7 +462,7 @@ const SUB_GAP_PX = 4
 function buildSubInfoGraphics(
   data: OHLC[],
   infoIdx: number,
-  activeIndicators: string[],
+  subDefs: readonly SubChartDef[],
   subStartTop: number,
   volumeCompare: VolumeCompareConfig,
 ): any[] {
@@ -382,9 +470,8 @@ function buildSubInfoGraphics(
   const graphics: any[] = []
   let curTop = subStartTop
 
-  activeIndicators.forEach((key) => {
-    const def = SUB_CHARTS.find(s => s.key === key)
-    if (!def) return
+  subDefs.forEach((def) => {
+    const key = def.key
 
     const items = def.buildInfo(d)
     if (def.key === 'vol' && d) {
@@ -433,7 +520,7 @@ function buildSubInfoGraphics(
     const rich: Record<string, any> = {}
     items.forEach((item, idx) => {
       const styleKey = `s${idx}`
-      richTextParts.push(`{${styleKey}|${item.label}:${item.value}}`)
+      richTextParts.push(`{${styleKey}|${richSafe(item.label)}:${richSafe(item.value)}}`)
       rich[styleKey] = {
         fill: item.color,
         fontSize: 10,
@@ -473,6 +560,7 @@ function buildOption(
   ranges: ChartRange[] | undefined,
   priceLines: ChartPriceLine[] | undefined,
   showMA: boolean,
+  maLines: readonly MaKey[],
   compact: boolean,
   activeIndicators: string[],
   containerHeight: number,
@@ -480,10 +568,13 @@ function buildOption(
   linkedPrice: number | null | undefined,
   volumeCompare: VolumeCompareConfig,
   addedDate: string | null | undefined,
+  activeSubDefs: readonly SubChartDef[],
+  mainOverlay: readonly AlignedOutput[],
 ): EChartsOption {
   const candleData = data.map(d => [d.open, d.close, d.low, d.high])
 
-  const hasMA = showMA && data.some(d => d.ma5 != null || d.ma10 != null || d.ma20 != null || d.ma60 != null)
+  const visibleMA = showMA ? MA_OUTPUTS.filter(ma => maLines.includes(ma.key)) : []
+  const hasMA = visibleMA.length > 0 && data.some(d => visibleMA.some(ma => d[ma.key] != null))
 
   const markPointData: any[] = []
   if (markers && markers.length > 0) {
@@ -541,15 +632,7 @@ function buildOption(
   const topPad = 8
   const candleBottomPad = 22
 
-  let subTotalH = 0
-  const activeSubDefs: SubChartDef[] = []
-  activeIndicators.forEach(key => {
-    const def = SUB_CHARTS.find(s => s.key === key)
-    if (!def) return
-    activeSubDefs.push(def)
-    subTotalH += INFO_BAR_H + def.height
-  })
-  if (activeSubDefs.length > 0) subTotalH += activeSubDefs.length * SUB_GAP_PX
+  const subTotalH = subChartsTotalHeight(activeSubDefs)
 
   const candleAvail = Math.max(containerHeight - topPad - candleBottomPad - subTotalH, 100)
 
@@ -694,10 +777,7 @@ function buildOption(
       silent: true,
       lineStyle: { width: 1, color }, itemStyle: { color },
     })
-    series.push(maLine('ma5', THEME.ma5, 'MA5'))
-    series.push(maLine('ma10', THEME.ma10, 'MA10'))
-    series.push(maLine('ma20', THEME.ma20, 'MA20'))
-    series.push(maLine('ma60', THEME.ma60, 'MA60'))
+    for (const ma of visibleMA) series.push(maLine(ma.key, ma.color, ma.label))
   }
 
   // 加入自选日标注: 蓝色竖虚线从该根K线的下沿连到主图底端的「自选」标签。
@@ -777,6 +857,9 @@ function buildOption(
     series.push(bollLine('boll_lower', '#E879F9', 'BOLL下'))
   }
 
+  // 主图自定义指标叠加 (已按日期对齐 data)
+  if (mainOverlay.length > 0) series.push(...overlayToEChartsSeries(mainOverlay, data))
+
   // ===== 子图区域 =====
   let curTop = topPad + candleAvail + candleBottomPad
 
@@ -828,7 +911,7 @@ function buildOption(
 
   // 子图信息栏 graphic
   const subStartTop = topPad + candleAvail + candleBottomPad
-  const infoGraphics = buildSubInfoGraphics(data, infoIdx, activeIndicators, subStartTop, volumeCompare)
+  const infoGraphics = buildSubInfoGraphics(data, infoIdx, activeSubDefs, subStartTop, volumeCompare)
 
   return {
     animation: false,
@@ -875,6 +958,7 @@ export function EChartsCandlestick({
   priceLines,
   height = 480,
   showMA = true,
+  maLines = DEFAULT_MA_LINES,
   showInfoBar = true,
   showMarkers: showMarkersProp = true,
   onToggleMarkers: _onToggleMarkers,
@@ -887,6 +971,7 @@ export function EChartsCandlestick({
   activeIndicators = [],
   volumeCompare = { enabled: true, days: 1 },
   addedDate,
+  overlays,
 }: Props) {
   const hoverSurfaceRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -918,6 +1003,7 @@ export function EChartsCandlestick({
   volumeCompareRef.current = volumeCompare
   const chartHeightRef = useRef(300)
   const subTotalHRef = useRef(0)
+  const subDefsRef = useRef<readonly SubChartDef[]>([])
   const getInfoBarHTMLRef = useRef<() => string>(() => '')
 
   // 强制刷新信息栏 DOM 的回调
@@ -933,7 +1019,7 @@ export function EChartsCandlestick({
     const infoGraphics = buildSubInfoGraphics(
       curData,
       idx,
-      activeIndicatorsRef.current,
+      subDefsRef.current,
       subStartTop,
       volumeCompareRef.current,
     )
@@ -942,22 +1028,6 @@ export function EChartsCandlestick({
     }
   }).current
 
-  // 计算子图总高度
-  const activeSubDefs = activeIndicators
-    .map(key => SUB_CHARTS.find(s => s.key === key))
-    .filter((d): d is SubChartDef => !!d)
-
-  let subTotalH = 0
-  activeSubDefs.forEach(def => { subTotalH += INFO_BAR_H + def.height })
-  if (activeSubDefs.length > 0) subTotalH += activeSubDefs.length * SUB_GAP_PX
-
-  const mainInfoBarH = showInfoBar ? 40 : 0
-  const minCandleH = 120
-
-  const chartHeight = Math.max(height - mainInfoBarH, 8 + minCandleH + 14 + subTotalH)
-  chartHeightRef.current = chartHeight
-  subTotalHRef.current = subTotalH
-
   // 预计算 date→index Map (O(1) 查找)
   const dates = useMemo(() => data.map(d => d.date), [data])
   const dateIndexMap = useMemo(() => {
@@ -965,6 +1035,33 @@ export function EChartsCandlestick({
     dates.forEach((d, i) => m.set(d, i))
     return m
   }, [dates])
+
+  // 自定义指标: 按日期对齐 + 主题可读色 (theme 进依赖, 切主题重新解析颜色)
+  const alignedOverlays = useMemo(
+    () => alignOverlays(overlays ?? [], dates, theme, chartTheme(theme).text),
+    [overlays, dates, theme],
+  )
+  const mainOverlay = useMemo(
+    () => (overlays ?? []).filter(o => o.pane === 'main').flatMap(o => alignedOverlays.get(o.id) ?? []),
+    [overlays, alignedOverlays],
+  )
+  const activeSubDefs = useMemo(() => {
+    const extra = (overlays ?? [])
+      .filter(o => o.pane === 'sub')
+      .map(o => buildIndicatorSubChartDef(o.id, o.name, alignedOverlays.get(o.id) ?? [], dates))
+    return resolveSubChartDefs(activeIndicators, extra)
+  }, [overlays, alignedOverlays, dates, activeIndicators])
+  subDefsRef.current = activeSubDefs
+
+  // 计算子图总高度
+  const subTotalH = subChartsTotalHeight(activeSubDefs)
+
+  const mainInfoBarH = showInfoBar ? 40 : 0
+  const minCandleH = 120
+
+  const chartHeight = Math.max(height - mainInfoBarH, 8 + minCandleH + 14 + subTotalH)
+  chartHeightRef.current = chartHeight
+  subTotalHRef.current = subTotalH
 
   // dataZoom 初始范围: 'all' = 显示整段数据, 否则取末尾 visibleBars 根
   const initialZoom = useMemo(() => {
@@ -1026,21 +1123,13 @@ export function EChartsCandlestick({
     }
     html += `</div>`
 
-    // 第二行: MA + BOLL
-    if (showMA) {
-      html += `<div style="display:flex;align-items:center;gap:10px;padding:0 8px;font:11px 'JetBrains Mono',monospace;select:none;min-height:20px;flex-wrap:wrap">`
-      if (d.ma5 != null) html += `<span style="color:${THEME.ma5}">MA5:${Number(d.ma5).toFixed(2)}</span>`
-      if (d.ma10 != null) html += `<span style="color:${THEME.ma10}">MA10:${Number(d.ma10).toFixed(2)}</span>`
-      if (d.ma20 != null) html += `<span style="color:${THEME.ma20}">MA20:${Number(d.ma20).toFixed(2)}</span>`
-      if (d.ma60 != null) html += `<span style="color:${THEME.ma60}">MA60:${Number(d.ma60).toFixed(2)}</span>`
-      if (d.boll_upper != null && activeIndicators.includes('boll')) {
-        html += `<span style="color:#E879F9">BOLL:${Number(d.boll_upper).toFixed(2)}/${Number(d.ma20).toFixed(2)}/${Number(d.boll_lower).toFixed(2)}</span>`
-      }
-      html += `</div>`
+    // 第二行: MA + BOLL + 主图自定义指标
+    if (showMA || mainOverlay.length > 0) {
+      html += maInfoRowHTML(d, showMA ? maLines : [], showMA && activeIndicators.includes('boll'), mainOverlay, idx)
     }
 
     return html
-  }, [data, stockInfo, showMA, activeIndicators])
+  }, [data, stockInfo, showMA, maLines, activeIndicators, mainOverlay])
   getInfoBarHTMLRef.current = getInfoBarHTML
 
   // data/symbol 变化时重置 infoIdx:
@@ -1249,12 +1338,14 @@ export function EChartsCandlestick({
       showMarkersProp ? markers : undefined,
       ranges,
       priceLines,
-      showMA, compactRef.current,
+      showMA, maLines, compactRef.current,
       activeIndicators, chartHeight,
       infoIdxRef.current,
       linkedPrice,
       volumeCompare,
       addedDate,
+      activeSubDefs,
+      mainOverlay,
     )
 
     chart.setOption(option, true)
@@ -1272,7 +1363,7 @@ export function EChartsCandlestick({
     if (infoEl) {
       infoEl.innerHTML = getInfoBarHTML()
     }
-  }, [data, markers, ranges, priceLines, linkedPrice, showMA, showMarkersProp, activeIndicators, volumeCompare, addedDate, chartHeight, dates, dateIndexMap, initialZoom, getInfoBarHTML, theme])
+  }, [data, markers, ranges, priceLines, linkedPrice, showMA, maLines, showMarkersProp, activeIndicators, volumeCompare, addedDate, chartHeight, dates, dateIndexMap, initialZoom, getInfoBarHTML, theme, activeSubDefs, mainOverlay])
 
   // 渲染信息栏容器 (内容由 JS 直接写入)
   const initialHTML = useMemo(() => {
@@ -1303,17 +1394,7 @@ export function EChartsCandlestick({
       html += `<span style="color:${CT().text}">${turnoverRate.toFixed(2)}%</span>`
     }
     html += `</div>`
-    if (showMA) {
-      html += `<div style="display:flex;align-items:center;gap:10px;padding:0 8px;font:11px 'JetBrains Mono',monospace;min-height:20px;flex-wrap:wrap">`
-      if (d.ma5 != null) html += `<span style="color:${THEME.ma5}">MA5:${Number(d.ma5).toFixed(2)}</span>`
-      if (d.ma10 != null) html += `<span style="color:${THEME.ma10}">MA10:${Number(d.ma10).toFixed(2)}</span>`
-      if (d.ma20 != null) html += `<span style="color:${THEME.ma20}">MA20:${Number(d.ma20).toFixed(2)}</span>`
-      if (d.ma60 != null) html += `<span style="color:${THEME.ma60}">MA60:${Number(d.ma60).toFixed(2)}</span>`
-      if (d.boll_upper != null && activeIndicators.includes('boll')) {
-        html += `<span style="color:#E879F9">BOLL:${Number(d.boll_upper).toFixed(2)}/${Number(d.ma20).toFixed(2)}/${Number(d.boll_lower).toFixed(2)}</span>`
-      }
-      html += `</div>`
-    }
+    if (showMA) html += maInfoRowHTML(d, maLines, activeIndicators.includes('boll'))
     return html
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])

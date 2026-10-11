@@ -51,6 +51,9 @@ const OPERATOR_GROUPS: { label: string; ops: { name: string; sig: string; desc: 
       { name: 'rank', sig: 'rank(x)', desc: '当日横截面百分位' },
       { name: 'zscore', sig: 'zscore(x)', desc: '当日横截面 z 分' },
       { name: 'winsorize', sig: 'winsorize(x,k)', desc: '截面截尾至 μ±kσ · k∈[1,6] 默认 3' },
+      { name: 'group_rank', sig: 'group_rank(x,industry)', desc: '同花顺二级行业内百分位 · 组内<5只为空' },
+      { name: 'group_zscore', sig: 'group_zscore(x,industry)', desc: '二级行业内 z 分 · 组内<5只为空' },
+      { name: 'group_mean', sig: 'group_mean(x,industry)', desc: '二级行业等权均值 · 行业归属按归档点时' },
     ],
   },
   {

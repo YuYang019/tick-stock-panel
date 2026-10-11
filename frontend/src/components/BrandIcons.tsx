@@ -66,6 +66,17 @@ export const IconFactors = make(
   </>,
 )
 
+/** 指标 — K 线立柱 + 叠加的指标曲线 */
+export const IconIndicators = make(
+  <>
+    <path d="M7 5V19" strokeWidth="1.5" strokeOpacity="0.6" />
+    <rect x="5.5" y="9" width="3" height="6" fill="currentColor" stroke="none" />
+    <path d="M15 4V16" strokeWidth="1.5" strokeOpacity="0.6" />
+    <rect x="13.5" y="7" width="3" height="5" fill="currentColor" stroke="none" />
+    <path d="M3 17.5C7 12 10.5 16.5 14 12.5S19 9.5 21 8.5" />
+  </>,
+)
+
 /** 回测 — K 线立柱 + 倒放双三角 (把行情倒回去重放) */
 export const IconBacktest = make(
   <>

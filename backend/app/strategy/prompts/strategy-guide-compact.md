@@ -146,7 +146,7 @@ anchor_date = _date.fromisoformat(anchor_raw) if isinstance(anchor_raw, str) els
 
 价格：`open`, `high`, `low`, `close`, `raw_close`, `raw_high`, `raw_low`, `prev_close`, `change_pct`, `change_amount`, `amount`, `amplitude`
 
-均线：`ma5`, `ma10`, `ma20`, `ma30`, `ma60`, `ema5`, `ema10`, `ema20`, `ema30`, `ema60`
+均线：`ma5`, `ma10`, `ma20`, `ma30`, `ma60`, `ma120`, `ema5`, `ema10`, `ema20`, `ema30`, `ema60`
 
 技术指标：`macd_dif`, `macd_dea`, `macd_hist`, `boll_upper`, `boll_lower`, `kdj_k`, `kdj_d`, `kdj_j`, `rsi_6`, `rsi_14`, `rsi_24`, `atr_14`
 

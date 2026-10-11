@@ -51,6 +51,7 @@ from app.indicators.pipeline import (
     INDICATOR_COLUMNS,
     LIMIT_SIGNAL_OUTPUTS,
     get_signal_dependencies,
+    indicator_warmup_bars,
 )
 from app.strategy.engine import StrategyDataContext, StrategyDef, StrategyEngine
 from app.strategy.scoring import (
@@ -258,7 +259,13 @@ class StrategyDependencyResolver:
         plan = FeaturePlan(
             required_features=frozenset(required_features),
             required_signals=frozenset(required_signals),
-            warmup_bars=max(60, int(strategy.lookback_days or 1), scoring_warmup_bars(scoring)),
+            warmup_bars=max(
+                60,
+                int(strategy.lookback_days or 1),
+                scoring_warmup_bars(scoring),
+                # 长窗口指标 (如 ma120, 含信号依赖展开) 需要更长预热才满窗
+                indicator_warmup_bars(required_features),
+            ),
         )
         return ResolvedFeaturePlan(
             base_columns=base_columns,
@@ -322,6 +329,7 @@ class StrategyDependencyResolver:
             int(strategy.matrix_strategy.required_warmup_bars(params)),
             scoring_warmup_bars(scoring),
             scoring_warmup_bars(parameter_scoring),
+            indicator_warmup_bars(required_features | overlay_fields),
         )
         matrix_columns = set(base_columns) | set(instrument_columns) | overlay_fields | {
             "signal_limit_up",

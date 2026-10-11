@@ -555,6 +555,9 @@ function BatchDiscovery({ onInspect, focusFactor }: { onInspect: (factorName: st
                         </div>
                         <div className="mt-0.5 text-[10px] text-muted">{item.group} · {item.factor_name}</div>
                         {item.error && <div className="mt-1 text-[10px] text-danger">{item.error}</div>}
+                        {!item.error && item.warnings?.map(warning => (
+                          <div key={warning} className="mt-1 text-[10px] text-warning">⚠ {warning}</div>
+                        ))}
                       </td>
                       <td className={`px-3 py-3 text-right font-mono ${priceColorClass(item.ic_mean)}`}>{item.ic_mean == null ? '—' : fmtPct(item.ic_mean)}</td>
                       <td className="px-3 py-3 text-right font-mono text-foreground">{item.ir == null ? '—' : item.ir.toFixed(2)}</td>

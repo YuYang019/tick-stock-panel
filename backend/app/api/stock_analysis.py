@@ -79,8 +79,11 @@ def _build_series(df: pl.DataFrame) -> dict:
     # Keltner 通道三档(需要 ATR)
     if has_atr:
         atr = df["atr_14"]
-        # MA120 现场算(不在预计算列中)
-        ma120 = df.select(pl.col("close").rolling_mean(120))["close"] if df.height >= 120 else None
+        # MA120 优先用预计算列; 缺列 (旧数据帧) 时现场算
+        if "ma120" in df.columns:
+            ma120 = df["ma120"]
+        else:
+            ma120 = df.select(pl.col("close").rolling_mean(120))["close"] if df.height >= 120 else None
 
         def _channel(ma: pl.Series, n: float) -> dict:
             return {

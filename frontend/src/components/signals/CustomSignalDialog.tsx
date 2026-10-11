@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Loader2, Save, Sparkles, X } from 'lucide-react'
-import { api, type CustomSignal } from '@/lib/api'
+import { Info, Loader2, Save, Sparkles, X } from 'lucide-react'
+import { api, type CustomSignal, type CustomSignalFieldGroup } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
 import { useDialogBackdrop } from '@/lib/useDialogBackdrop'
 import { ConditionEditor } from './ConditionEditor'
@@ -19,6 +19,25 @@ const emptySignal = (kind: CustomSignal['kind'] = 'exit'): CustomSignal => ({
   id: '', name: '', kind, enabled: true,
   conditions: [{ left: 'close', op: '>', right: 'field:ma20', leftDays: 0, rightDays: 0 }],
 })
+
+/** 自定义指标输出线作为因子字段: id `ind_{指标id}_{输出key}`, 分组「自定义指标」 */
+const INDICATOR_GROUP_LABEL = '自定义指标'
+
+export function indicatorFieldsUsed(
+  conditions: CustomSignal['conditions'],
+  groups: CustomSignalFieldGroup[] | undefined,
+): string[] {
+  const groupKeys = new Set(
+    (groups ?? []).filter(g => g.label === INDICATOR_GROUP_LABEL).flatMap(g => g.fields.map(f => f.key)),
+  )
+  const isInd = (k: string) => groupKeys.has(k) || k.startsWith('ind_')
+  const used = new Set<string>()
+  for (const c of conditions) {
+    if (isInd(c.left)) used.add(c.left)
+    if (c.right.startsWith('field:') && isInd(c.right.slice(6))) used.add(c.right.slice(6))
+  }
+  return [...used]
+}
 
 export function CustomSignalDialog({ open, signal, defaultKind = 'exit', onClose, onSaved }: Props) {
   const qc = useQueryClient()
@@ -99,6 +118,9 @@ export function CustomSignalDialog({ open, signal, defaultKind = 'exit', onClose
     onError: err => setError(String((err as any)?.message ?? err)),
   })
 
+  const usedIndicatorFields = indicatorFieldsUsed(draft.conditions, groups)
+  const fieldLabel = (k: string) => fields.find(f => f.key === k)?.label ?? k
+
   const updateConditions = (conditions: CustomSignal['conditions']) =>
     setDraft(d => ({ ...d, conditions }))
 
@@ -172,6 +194,15 @@ export function CustomSignalDialog({ open, signal, defaultKind = 'exit', onClose
                     </button>
                   }
                 />
+                {usedIndicatorFields.length > 0 && (
+                  <div role="note" className="flex items-start gap-1.5 rounded-btn border border-amber-400/30 bg-amber-400/5 px-3 py-2 text-[11px] leading-relaxed text-amber-500">
+                    <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                    <span>
+                      已选自定义指标字段（{usedIndicatorFields.map(fieldLabel).join('、')}）：盘中实时预警不支持，收盘后计算；
+                      盘中快照缺该列时此信号跳过，不会误触发。
+                    </span>
+                  </div>
+                )}
                 {aiOpen && (
                   <div className="rounded-card border border-amber-400/30 bg-amber-400/5 p-3 space-y-2">
                     <div className="flex items-center gap-2">
