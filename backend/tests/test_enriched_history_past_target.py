@@ -69,3 +69,21 @@ def test_screener_history_does_not_depend_on_later_cached_days(tmp_path):
     assert without_later["date"].n_unique() == LOOKBACK + 1
     assert with_later["date"].n_unique() == without_later["date"].n_unique()
     assert with_later.sort(["symbol", "date"]).equals(without_later.sort(["symbol", "date"]))
+
+
+def test_long_lookback_hits_cache_when_enough_trading_days(tmp_path):
+    """lookback≥90 (如 RPS120/MA120 策略) 只要缓存内交易日够, 就必须命中缓存。
+
+    旧判据要求缓存起点 ≤ target-(lookback+60)×2 自然日, 300 天缓存对 lookback=131
+    恒判 miss, 落到慢路径 (180 自然日封顶, 长窗口指标算不满, 策略选股为 0)。
+    """
+    days = _trading_days()  # 220 个交易日 (~10 个月)
+    out = _repo(tmp_path, _cache(days)).get_enriched_history(days[-1], 131)
+    assert out is not None
+    assert out["date"].unique().sort().to_list() == days[-132:]
+
+
+def test_cache_with_too_few_trading_days_is_a_miss(tmp_path):
+    """交易日不足 lookback+1 时返回 None (走慢路径重算), 不得返回截短窗口。"""
+    days = _trading_days(50)
+    assert _repo(tmp_path, _cache(days)).get_enriched_history(days[-1], 60) is None
