@@ -101,3 +101,17 @@ async def test_an_explicit_target_date_still_wins(at_beijing, monkeypatch) -> No
 
     assert seen["fetched"] == date(2026, 1, 5)
     assert day_str == "2026-01-05"
+
+
+def test_outside_window_sleeps_until_next_window_start(at_beijing) -> None:
+    """窗口外不能睡满 interval: 1440 分钟间隔会让它每天同一时刻醒来、永远落在窗口外。"""
+    day = 24 * 3600
+    # 北京 15:29, 窗口 15:30 起 → 1 分钟后醒来 (而非 24h 后的 15:29)
+    at_beijing(datetime(2026, 3, 2, 15, 29, tzinfo=CN_TZ))
+    assert ext_pull._seconds_until_window_start("15:30", day) == 61
+    # 北京 00:10 (窗口已过) → 当天 15:30
+    at_beijing(datetime(2026, 3, 2, 0, 10, tzinfo=CN_TZ))
+    assert ext_pull._seconds_until_window_start("15:30", day) == (15 * 60 + 20) * 60 + 1
+    # 短间隔仍按 interval 上限
+    assert ext_pull._seconds_until_window_start("15:30", 600) == 600
+    assert ext_pull._seconds_until_window_start("bad", 600) == 600
