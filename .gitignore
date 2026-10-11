@@ -80,7 +80,6 @@ deploy.sh
 # ===== 内部设计文档(不开源) =====
 DESIGN.md
 DESIGN-proposal.md
-CLAUDE.md
 
 # ===== 私人脚本(不开源) =====
 docs/zhihu/
