@@ -424,7 +424,7 @@ def _get_stock_daily(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     keep = [
         c for c in (
             "date", "open", "high", "low", "close", "volume", "amount",
-            "change_pct", "turnover_rate", "amplitude", "ma5", "ma10", "ma20", "ma60",
+            "change_pct", "turnover_rate", "amplitude", "ma5", "ma10", "ma20", "ma60", "ma120",
         ) if c in df.columns
     ]
     rows = _rows(df.select(keep).tail(days), days)
@@ -457,7 +457,7 @@ def _get_stock_analysis(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any
     keep = [
         c for c in (
             "date", "close", "change_pct", "amount", "turnover_rate", "amplitude",
-            "ma5", "ma10", "ma20", "ma60", "high_60d", "low_60d",
+            "ma5", "ma10", "ma20", "ma60", "ma120", "high_60d", "low_60d",
         ) if c in recent.columns
     ]
     latest_rows = _rows(recent.select(keep).tail(1), 1)
@@ -727,7 +727,7 @@ def _invalidate_custom_signals(data_dir: Path, repo: Any) -> None:
 
 _SIGNAL_FIELD_HINT = (
     "常用字段: close/open/high/low/volume/amount/change_pct/turnover_rate/"
-    "ma5/ma10/ma20/ma30/ma60/ema5-ema60/macd_dif/macd_dea/macd_hist/"
+    "ma5/ma10/ma20/ma30/ma60/ma120/ema5-ema60/macd_dif/macd_dea/macd_hist/"
     "boll_upper/boll_lower/kdj_k/kdj_d/kdj_j/rsi_6/rsi_14/rsi_24/atr_14/"
     "vol_ma5/vol_ma10/vol_ratio_5d/high_60d/low_60d/momentum_5d-60d/"
     "annual_vol_20d/consecutive_limit_ups; 右值数字直接写, 字段引用写 'field:字段名'"
@@ -1324,7 +1324,7 @@ def _local_tool_schemas() -> list[dict[str, Any]]:
             "create_signal_strategy",
             "在信号库创建一个自定义信号(动作工具, 须用户在确认卡上确认后才执行)。"
             "把交易思路翻译成声明式条件: 白名单字段 + 比较运算符, 多条件之间为 AND。"
-            "字段如 close/open/high/low/volume/change_pct/turnover_rate/ma5/ma10/ma20/ma60/"
+            "字段如 close/open/high/low/volume/change_pct/turnover_rate/ma5/ma10/ma20/ma60/ma120/"
             "macd_dif/macd_dea/macd_hist/boll_upper/boll_lower/kdj_k/kdj_d/kdj_j/rsi_6/rsi_14/"
             "vol_ratio_5d/high_60d/low_60d/momentum_5d 等; 上穿/下穿用天数偏移表达"
             "(如 close>field:ma20 且 1 日前 close<=field:ma20 即金叉)。",

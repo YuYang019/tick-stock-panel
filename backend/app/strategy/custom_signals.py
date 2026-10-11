@@ -50,7 +50,7 @@ ALLOWED_FIELDS: frozenset[str] = frozenset({
     # 基础
     "prev_close", "change_pct", "change_amount", "amplitude",
     # 均线 / 指数均线
-    "ma5", "ma10", "ma20", "ma30", "ma60",
+    "ma5", "ma10", "ma20", "ma30", "ma60", "ma120",
     "ema5", "ema10", "ema20", "ema30", "ema60",
     # MACD / BOLL / KDJ / ATR
     "macd_dif", "macd_dea", "macd_hist",

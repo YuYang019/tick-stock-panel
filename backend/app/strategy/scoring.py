@@ -55,12 +55,15 @@ def scoring_warmup_bars(scoring: Mapping[str, Any]) -> int:
         for name, weight in scoring.items()
         if weight
     ]
-    # composite/custom 因子的预热来自注册表 (P3)
+    # composite/custom/indicator 因子的预热来自注册表 (P3; indicator = 通达信指标输出)
     for name, weight in scoring.items():
         if not weight:
             continue
         spec = _registry_get_factor(str(name))
-        if spec is not None and spec.kind in ("custom", "composite"):
+        if spec is not None and (
+            spec.kind in ("custom", "composite", "indicator")
+            or "relative_strength" in spec.tags  # 相对强度族 (目录外模块化注册, 预热 N+1)
+        ):
             warmups.append(spec.warmup_bars)
     return max(warmups, default=1)
 
@@ -291,7 +294,16 @@ def materialize_scoring_columns(
     # custom (DSL) 因子先物化: frame_transform 可能需要多阶段临时列 (嵌套窗口规避),
     # 与单表达式路径不同, 必须整体走帧变换 —— 与检验/试算共用同一条计算路径 (P3)。
     from app.factors.dsl import FACTOR_COLUMN, compile_formula_cached
+    from app.indicators.tdx.factors import materialize_indicator_columns
 
+    # indicator (通达信指标) 因子: 按指标分组整体求值一次, 再 alias 成因子列;
+    # 只依赖 OHLCV 基础列, 先于 custom 物化 (custom 公式可引用 ind_* 因子)。
+    frame = materialize_indicator_columns(frame, names)
+    # 相对强度 (RPS) 族: 全帧截面排名 / 基准 join, 整帧一次物化 (含 composite/custom 引用的成员);
+    # 单日快照帧跳过 (缺列 → 下游不可计算), 见 app/factors/relative_strength.py。
+    from app.factors.relative_strength import materialize_relative_strength
+
+    frame = materialize_relative_strength(frame, names)
     for name in names:
         spec = _registry_get_factor(str(name))
         if spec is None or spec.kind != "custom" or name in frame.columns:

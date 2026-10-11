@@ -185,7 +185,7 @@ REQUIRED_FEATURES = {"ma20", "momentum_20d", "vol_ratio_5d"}
 
 | 列名 | 说明 |
 |------|------|
-| ma5, ma10, ma20, ma30, ma60 | 简单移动均线 |
+| ma5, ma10, ma20, ma30, ma60, ma120 | 简单移动均线 (ma120 = 半年线, 上市不足 120 个交易日为 null) |
 | ema5, ema10, ema20, ema30, ema60 | 指数移动均线 |
 
 ### 技术指标
@@ -222,6 +222,22 @@ REQUIRED_FEATURES = {"ma20", "momentum_20d", "vol_ratio_5d"}
 | 列名 | 说明 |
 |------|------|
 | ma20_bias | `close / ma20 - 1`，仅在内存中计算，不写入数据表 |
+
+### 自定义指标输出（通达信公式，`ind_*`）
+
+用户在指标库保存的通达信公式指标，每条输出线注册为因子列 `ind_{指标id}_{输出key}`（如预设「知行」的两条线）。支持的引用方式：
+
+- 评分字段：`scoring = {"ind_zhixing_o_cb4e5829": 1.0}`，由评分物化管线按需计算；
+- 自定义信号条件：先在「自定义信号」中用 `ind_*` 字段建信号，策略再通过 `csg_{信号id}` 列引用（写进 `REQUIRED_FEATURES`）。
+
+```python
+REQUIRED_FEATURES = {"csg_zhixing_golden"}  # 引用 ind_* 条件的自定义信号
+```
+
+- 不要在 `filter_history()` 里直接读 `ind_*` 列：该路径不物化注册表因子列；
+- 列值在历史窗口上按 symbol 时序计算（前复权 OHLCV），预热由指标公式推导；
+- 盘中单日快照不计算该列（实时预警不支持，收盘后计算）；
+- 具体列名以 `/api/custom-signals/options` 中「自定义指标」分组为准，不要猜测。
 
 ### 涨跌停
 

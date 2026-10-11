@@ -1365,7 +1365,7 @@ export interface FactorColumn {
 }
 
 // ===== Factor Library (注册表, P1) =====
-export type FactorKind = 'base' | 'virtual' | 'composite' | 'custom'
+export type FactorKind = 'base' | 'virtual' | 'composite' | 'custom' | 'indicator'
 export type FactorStability = 'stable' | 'experimental' | 'deprecated'
 
 export interface FactorLibraryItem {
@@ -1399,6 +1399,120 @@ export interface FactorValidateResponse {
   referenced_factors: string[]
   warmup_bars: number
   cross_sectional: boolean
+}
+
+// ===== 通达信指标 (/api/indicators) =====
+// 契约见 docs/superpowers/specs/2026-10-11-tdx-indicator-system-design.md §4
+
+export type IndicatorPane = 'main' | 'sub'
+export type IndicatorOutputKind = 'line' | 'stick' | 'colorstick' | 'volstick' | 'dot'
+
+/** TdxError(code, message, line, col); line/col 为 1 起 */
+export interface TdxError {
+  code: string
+  message: string
+  line?: number | null
+  col?: number | null
+}
+
+export interface IndicatorOutputMeta {
+  name: string
+  key: string
+  kind: IndicatorOutputKind
+  /** #RRGGBB; null = 前端按调色板分配 */
+  color: string | null
+  thick: number
+  dashed: boolean
+  /** NODRAW → false (可被引用但不上图) */
+  visible: boolean
+}
+
+export interface IndicatorItem {
+  id: string
+  name: string
+  pane: IndicatorPane
+  builtin: boolean
+  description?: string
+  formula: string
+  outputs: IndicatorOutputMeta[]
+  warnings?: TdxError[]
+}
+
+export interface IndicatorFunctionDoc {
+  name: string
+  signature?: string
+  desc?: string
+}
+
+/** 变量/修饰符条目后端可能给字符串或对象, 前端统一按 IndicatorFunctionDoc 归一 */
+export interface IndicatorFunctionsResponse {
+  functions: IndicatorFunctionDoc[]
+  variables: (string | IndicatorFunctionDoc)[]
+  modifiers: (string | IndicatorFunctionDoc)[]
+}
+
+export interface IndicatorValidateResponse {
+  ok: boolean
+  errors: TdxError[]
+  warnings: TdxError[]
+  outputs: IndicatorOutputMeta[]
+  warmup_bars: number
+}
+
+export interface IndicatorStickValues {
+  p1: (number | null)[]
+  p2: (number | null)[]
+  cond: (boolean | null)[]
+  /** 后端放在 stick 内; 外层 width/empty 仅为兼容保留 */
+  width?: number
+  empty?: boolean
+}
+
+/** series 输出: line 类带 values; STICKLINE 带 stick + width/empty */
+export interface IndicatorSeriesOutput extends IndicatorOutputMeta {
+  values?: (number | null)[]
+  stick?: IndicatorStickValues
+  width?: number
+  empty?: boolean
+}
+
+export interface IndicatorSeriesEntry {
+  outputs: IndicatorSeriesOutput[]
+}
+
+export interface IndicatorSeriesResponse {
+  symbol: string
+  dates: string[]
+  indicators: Record<string, IndicatorSeriesEntry>
+  errors?: Record<string, string>
+}
+
+/**
+ * /preview 返回"同 series 单指标结构": 规范形态为 {symbol, dates, outputs};
+ * 也容忍 {symbol, dates, indicators:{<id>:{outputs}}} 形态 (取首个), 见 previewOutputs()。
+ */
+export interface IndicatorPreviewResponse {
+  symbol: string
+  dates: string[]
+  outputs?: IndicatorSeriesOutput[]
+  indicators?: Record<string, IndicatorSeriesEntry>
+  errors?: Record<string, string>
+  warnings?: TdxError[]
+}
+
+export function previewOutputs(res: IndicatorPreviewResponse | undefined): IndicatorSeriesOutput[] {
+  if (!res) return []
+  if (Array.isArray(res.outputs)) return res.outputs
+  const first = res.indicators ? Object.values(res.indicators)[0] : undefined
+  return first?.outputs ?? []
+}
+
+export interface IndicatorSavePayload {
+  id?: string
+  name: string
+  formula: string
+  pane: IndicatorPane
+  description?: string
 }
 
 export interface FactorTrialResponse {
@@ -1463,6 +1577,8 @@ export interface FactorBacktestResult {
   n_symbols: number
   n_dates: number
   error: string | null
+  /** 降级注记 (如行业快照未来函数偏差 / ST 非点时); 旧结果缺字段 */
+  warnings?: string[]
 }
 
 export interface FactorBatchItem {
@@ -1484,6 +1600,8 @@ export interface FactorBatchItem {
   nw_lag?: number | null
   p_value?: number | null
   q_value?: number | null
+  /** 降级注记 (如行业快照未来函数偏差 / ST 非点时); 旧结果缺字段 */
+  warnings?: string[]
 }
 
 export interface FactorBatchResult {
@@ -3118,6 +3236,62 @@ export const api = {
       `/api/factors/custom/${encodeURIComponent(factorId)}/group`,
       { method: 'POST', body: JSON.stringify({ group }) },
     ),
+
+  // ===== 通达信指标 =====
+  /** 规范为数组; 同时容忍 {indicators:[...]} 包装 */
+  listIndicators: async (): Promise<IndicatorItem[]> => {
+    const res = await request<IndicatorItem[] | { indicators: IndicatorItem[] }>('/api/indicators')
+    return Array.isArray(res) ? res : (res?.indicators ?? [])
+  },
+
+  getIndicatorFunctions: () =>
+    request<IndicatorFunctionsResponse>('/api/indicators/functions'),
+
+  /** 编辑器防抖校验: 结果在面板内展示, 不弹 toast */
+  validateIndicator: (formula: string) =>
+    request<IndicatorValidateResponse>('/api/indicators/validate', {
+      method: 'POST',
+      body: JSON.stringify({ formula }),
+      quiet: true,
+    }),
+
+  createIndicator: (payload: IndicatorSavePayload) =>
+    request<IndicatorItem>('/api/indicators', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  updateIndicator: (id: string, payload: Omit<IndicatorSavePayload, 'id'>) =>
+    request<IndicatorItem>(`/api/indicators/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+
+  /** 409 = 被信号/策略引用 (detail 含引用方, 由调用方解析展示), 故 quiet */
+  deleteIndicator: (id: string) =>
+    request<{ ok: boolean }>(`/api/indicators/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      quiet: true,
+    }),
+
+  /** K 线叠加: 图表内联展示错误, 不弹 toast (切股/勾选频繁) */
+  indicatorSeries: (
+    symbol: string,
+    ids: readonly string[],
+    range?: { start?: string; end?: string },
+  ) => {
+    const qs = new URLSearchParams({ symbol, ids: ids.join(',') })
+    if (range?.start) qs.set('start_date', range.start)
+    if (range?.end) qs.set('end_date', range.end)
+    return request<IndicatorSeriesResponse>(`/api/indicators/series?${qs.toString()}`, { quiet: true })
+  },
+
+  previewIndicator: (payload: { formula: string; symbol: string; start_date?: string; end_date?: string }) =>
+    request<IndicatorPreviewResponse>('/api/indicators/preview', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+      quiet: true,
+    }),
 
   factorRun: (payload: {
     factor_name: string

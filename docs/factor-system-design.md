@@ -204,6 +204,9 @@ factor_value_exprs(available_cols) -> dict[str, pl.Expr | None]
 | `rank(x)` | 横截面百分位排名 ∈ (0,1] | null 不参与排名 |
 | `zscore(x)` | 横截面 (x−μ)/σ | σ=0 → null |
 | `winsorize(x,k)` | 截尾至 μ±kσ（k ∈ [1,6] 常量，默认 3） | 截面口径 |
+| `group_rank(x,g)` / `group_zscore(x,g)` / `group_mean(x,g)`【已实现】 | 按日期 × 分组键的组内百分位 ∈ (0,1] / z 分 / 等权均值 | `g` 必须是分组键标识符（当前仅 `industry` = 同花顺二级行业，`ext_hy_ths.所属同花顺行业` 按 "-" 取第 2 级）；组内有效成员 < 5 或组键缺失 → null；`over(["date", 组键])`；与 `rank` 同属截面算子，不得嵌入时序窗口（E009）；非法分组键 E003 |
+
+**分组键点时口径【已实现】**：行业归属为快照表，写入快照时同步归档 `data/ext_data/ext_hy_ths/history/date=YYYY-MM-DD/part.parquet`（当前快照按文件北京日期视作一份归档）；bar 日期取最近一份 `as_of ≤ date` 的归属；早于首份归档回退到最早归属，因子检验结果 `warnings` 携带「行业归属使用当前快照, 存在未来函数偏差」。实现见 `backend/app/factors/relative_strength.py`。
 
 **算术/工具**：`+ − * /`（除零 → null）、`log abs sign sqrt min max power(x,c) clamp(x,lo,hi)`、三元 `if_else(cond, a, b)`、比较与逻辑 `> >= < <= == != and or not`（产出布尔，配合 if_else）。
 
@@ -231,9 +234,12 @@ add_expr    = mul_expr { ("+" | "-") mul_expr } ;
 mul_expr    = unary { ("*" | "/") unary } ;
 unary       = "-" unary | primary ;
 primary     = NUMBER | IDENT | func_call | "(" expr ")" ;
-func_call   = IDENT "(" [ arglist ] ")" ;
+func_call   = IDENT "(" [ arglist ] ")" | group_call ;
+group_call  = ( "group_rank" | "group_zscore" | "group_mean" ) "(" expr "," GROUP_KEY ")" ;
 arglist     = expr { "," expr } ;
-(* IDENT：基准列/白名单指标列/已注册因子 id/算子名；NUMBER：十进制与负号经 unary 处理 *)
+GROUP_KEY   = "industry" ;
+(* IDENT：基准列/白名单指标列/已注册因子 id/算子名；NUMBER：十进制与负号经 unary 处理；
+   GROUP_KEY 不是数据列, 不进依赖集合 *)
 ```
 
 运算符优先级由产生式层级固定（or < and < 比较 < 加减 < 乘除 < 一元负号 < 原子），与 Python/JS 语义一致，降低用户迁移成本。

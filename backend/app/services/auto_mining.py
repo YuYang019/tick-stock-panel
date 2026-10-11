@@ -20,7 +20,7 @@ from datetime import date, timedelta
 from typing import Any, Literal
 
 from app.backtest.factor import FactorBacktestService, FactorBatchConfig
-from app.factors.registry import factor_columns_view
+from app.factors.registry import factor_columns_view, get_factor
 
 Profile = Literal["exploratory", "balanced", "strict"]
 
@@ -119,10 +119,13 @@ def screen_all_factors(
     if gate is None:
         raise ValueError(f"unknown mining profile: {profile}")
 
+    # kind=indicator (通达信指标输出, 价格水平量, scale_free=False) 不进全量截面筛选:
+    # 截面 IC 会退化为规模/价格效应; 需要时由用户显式指定。
     candidates = [
         str(item["id"])
         for item in factor_columns_view()
         if asset_type in item.get("asset_types", ["stock"])
+        and getattr(get_factor(str(item["id"])), "kind", None) != "indicator"
     ]
     screen_start = max(start or date.min, end - timedelta(days=SCREEN_WINDOW_DAYS))
     began = time.perf_counter()

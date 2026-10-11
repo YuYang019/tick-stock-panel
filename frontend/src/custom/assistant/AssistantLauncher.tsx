@@ -22,6 +22,7 @@ const PAGE_LABELS: Record<string, string> = {
   '/watchlist': '自选',
   '/screener': '策略',
   '/factors': '因子',
+  '/indicators': '指标',
   '/backtest': '回测',
   '/stock-analysis': '个股分析',
   '/limit-ladder': '连板梯队',

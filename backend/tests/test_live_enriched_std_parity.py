@@ -55,6 +55,8 @@ def test_intraday_boll_and_annual_vol_use_sample_std_like_full(tmp_path, column)
 
     repo = KlineRepository(DataStore(tmp_path))
     repo._enriched_history_cache = history_indicators
+    # 与 _refresh_enriched_impl 同口径: 缓存按 300 自然日读取 (本地历史更短 → 缓存即全量)
+    repo._enriched_history_read_start = latest - timedelta(days=300)
     repo._build_live_agg(latest)
 
     incremental = compute_enriched_today(

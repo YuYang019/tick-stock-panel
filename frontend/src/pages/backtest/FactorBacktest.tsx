@@ -344,6 +344,12 @@ export function FactorBacktest({ initialFactorName = 'momentum_20d' }: { initial
           </div>
         )}
 
+        {result && !result.error && (result.warnings?.length ?? 0) > 0 && (
+          <div role="note" className="text-xs text-warning bg-warning/10 border border-warning/30 rounded-btn px-3 py-2 space-y-0.5">
+            {result.warnings!.map(warning => <div key={warning}>⚠ {warning}</div>)}
+          </div>
+        )}
+
         {run.isError && (
           <div className="text-sm text-danger bg-danger/10 border border-danger/30 rounded-btn px-3 py-2">
             {String((run.error as any).message)}

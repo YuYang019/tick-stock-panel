@@ -17,7 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-Kind = Literal["base", "virtual", "composite", "custom"]
+Kind = Literal["base", "virtual", "composite", "custom", "indicator"]
 Direction = Literal["high", "low", "none"]
 Unit = Literal["ratio", "pct", "score", "count", "days", "currency", "none"]
 PitSource = Literal["financial_announce", "share_capital_announce", "none"]
@@ -50,6 +50,8 @@ class FactorSpec:
     tags: tuple[str, ...] = ()
     # composite 专用: ((成员 id, 权重), ...); 其余类型为空
     components: tuple[tuple[str, float], ...] = ()
+    # indicator 专用: (指标 id, 输出 key); formula_text 存完整通达信公式 (见 indicators/tdx/factors.py)
+    indicator_ref: tuple[str, ...] = ()
 
     def column_view(self) -> dict:
         """历史 FACTOR_COLUMNS 条目视图 (键与顺序兼容)。"""
@@ -298,9 +300,16 @@ _CATALOG: tuple[FactorSpec, ...] = (
         "KDJ K值 - D值, 正值代表快线在慢线上方",
         deps=frozenset({"kdj_k", "kdj_d"}),
     ),
+    # --- 半年线乖离: 追加在末尾 (不改 FACTOR_COLUMNS[:48] 挖掘顺序) ---
+    _virtual(
+        "ma120_bias", "MA120乖离", "均线偏离", "收盘价 / MA120 - 1",
+        deps=frozenset({"close", "ma120"}), warmup_bars=120,
+    ),
 )
 
 _REGISTRY: dict[str, FactorSpec] = {}
+# 目录外的内置因子 (模块化注册, 如相对强度族): 同样不可经 API 注销
+_PROTECTED_IDS: set[str] = set()
 
 
 def register_factor(spec: FactorSpec) -> None:
@@ -321,13 +330,13 @@ def get_factor(fid: str) -> FactorSpec | None:
 
 def unregister_factor(fid: str) -> FactorSpec | None:
     """注销动态注册的因子 (内置目录因子不可注销, fail-closed)。"""
-    if any(spec.id == fid for spec in _CATALOG):
+    if fid in _PROTECTED_IDS or any(spec.id == fid for spec in _CATALOG):
         raise ValueError(f"内置因子不可注销: {fid}")
     return _REGISTRY.pop(fid, None)
 
 
 def _ordered_specs() -> list[FactorSpec]:
-    """内置目录顺序在前, 动态注册因子 (custom/composite) 按注册顺序追加。"""
+    """内置目录顺序在前, 动态注册因子 (custom/composite/indicator) 按注册顺序追加。"""
     ordered: list[FactorSpec] = list(_CATALOG)
     known = {spec.id for spec in _CATALOG}
     ordered.extend(spec for fid, spec in _REGISTRY.items() if fid not in known)
@@ -398,3 +407,8 @@ def scoring_warmups() -> dict[str, int]:
         for spec in _CATALOG
         if spec.kind == "virtual" and spec.warmup_bars > 1
     }
+
+
+# 相对强度 (RPS) 因子族: 计算整帧截面/基准 join, 模块独立 (app/factors/relative_strength.py)。
+# 该模块在导入末尾自注册 (幂等); 此处末尾导入保证只导入本模块时也已注册。
+import app.factors.relative_strength  # noqa: E402, F401

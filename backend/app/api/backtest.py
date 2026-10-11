@@ -185,7 +185,7 @@ def factor_run(req: FactorBacktestRequest, request: Request):
 
 
 class FactorBatchRequest(BaseModel):
-    factor_names: list[str] = Field(..., min_length=1, max_length=96)  # 目录 77 + 自定义余量
+    factor_names: list[str] = Field(..., min_length=1, max_length=128)  # 目录 78 + 相对强度 18 + 自定义余量
     symbols: list[str] | None = None
     start: date | None = None
     end: date | None = None

@@ -43,7 +43,7 @@ _SIGNAL_CN: dict[str, str] = {
         "turnover_rate": "换手率", "volume": "成交量", "amount": "成交额",
         "_volume_delta": "轮询成交量差值(手)", "_sealed_vol": "封单量(手)",
     # 均线
-    "ma5": "MA5", "ma10": "MA10", "ma20": "MA20", "ma30": "MA30", "ma60": "MA60",
+    "ma5": "MA5", "ma10": "MA10", "ma20": "MA20", "ma30": "MA30", "ma60": "MA60", "ma120": "MA120",
     "ema5": "EMA5", "ema10": "EMA10", "ema20": "EMA20",
     # MACD / BOLL / KDJ / RSI
     "macd_dif": "MACD-DIF", "macd_dea": "MACD-DEA", "macd_hist": "MACD柱",

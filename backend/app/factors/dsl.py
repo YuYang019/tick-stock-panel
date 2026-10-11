@@ -9,6 +9,8 @@
 - 截面算子消费含窗口的子树时, 编译为两阶段: 先把该子树物化为临时列 (单层 over),
   再对临时列做截面运算 —— frame_transform 负责按依赖顺序执行全部阶段。
 - 截面算子嵌在时序窗口内 (如 ts_mean(rank(x), n)) v1 不支持, 编译期 E009 拒绝。
+- 分组截面算子 group_rank/group_zscore/group_mean(x, industry): over(["date", 组键列]),
+  组键列由 frame_transform 按需挂上 (行业 = 点时归档, relative_strength.attach_industry) 并在产出后删除。
 - 引用的注册因子(含 virtual)不内联表达式: 调用方用 materialize_scoring_columns
   物化成列, 编译产物统一以 pl.col(name) 引用; 运行期缺列即 fail-closed。
 """
@@ -56,6 +58,10 @@ OPERATORS: dict[str, tuple[int, tuple[str, ...]]] = {
     "decay_linear": (1, ("n",)),
     "rank": (1, ()),
     "zscore": (1, ()),
+    # 分组截面: 第 2 参数是分组键标识符 (GROUP_KEYS), 不是表达式
+    "group_rank": (2, ()),
+    "group_zscore": (2, ()),
+    "group_mean": (2, ()),
     "winsorize": (1, ("k",)),  # k 可省略, 默认 3
     "power": (1, ("c",)),
     "clamp": (1, ("lo", "hi")),
@@ -71,7 +77,11 @@ TS_OPERATORS = frozenset({
     "ts_mean", "ts_std", "ts_sum", "ts_max", "ts_min", "ts_delay", "ts_delta",
     "ts_rank", "ts_zscore", "ts_corr", "ts_cov", "ts_quantile", "decay_linear",
 })
-CROSS_OPERATORS = frozenset({"rank", "zscore", "winsorize"})
+GROUP_OPERATORS = frozenset({"group_rank", "group_zscore", "group_mean"})
+CROSS_OPERATORS = frozenset({"rank", "zscore", "winsorize"}) | GROUP_OPERATORS
+# 分组键 → 帧内列; industry = 同花顺二级行业 (点时归档, 早于首份归档回退快照并在结果注记)
+GROUP_KEYS: dict[str, str] = {"industry": "_ind2"}
+GROUP_MIN_MEMBERS = 5  # 组内有效成员 < 5 → null (与 rps_ind_* 同纪律)
 
 
 @dataclass
@@ -100,6 +110,7 @@ class CompiledFormula:
     warmup_bars: int = 1
     cross_sectional: bool = False
     formula_text: str = ""
+    group_keys: frozenset[str] = frozenset()  # 引用的分组键 (如 industry), 运行期按需挂列
 
 
 # ---------------------------------------------------------------- tokenizer
@@ -290,8 +301,20 @@ def _ast_depth(node: dict) -> int:
 def _collect_identifiers(node: dict, found: set[str]) -> None:
     if node["kind"] == "col":
         found.add(node["value"])
-    for child in node["children"]:
+    children = node["children"]
+    if node["kind"] == "call" and node["value"] in GROUP_OPERATORS:
+        children = children[:1]  # 第 2 参数是分组键, 不是数据列
+    for child in children:
         _collect_identifiers(child, found)
+
+
+def _collect_group_keys(node: dict, found: set[str]) -> None:
+    if node["kind"] == "call" and node["value"] in GROUP_OPERATORS and len(node["children"]) == 2:
+        key = node["children"][1]
+        if key["kind"] == "col":
+            found.add(key["value"])
+    for child in node["children"]:
+        _collect_group_keys(child, found)
 
 
 def _const_value(node: dict) -> float | None:
@@ -317,6 +340,14 @@ def _check_call(node: dict, errors: list[DslError]) -> dict[str, float]:
             "E003", f"函数 {name} 参数数量不符: 期望 {total_min}~{total_max} 个, 实际 {len(args)}",
             offset=node["offset"], detail={"name": name, "args": len(args)},
         ))
+        return {}
+    if name in GROUP_OPERATORS:
+        key = args[1]
+        if key["kind"] != "col" or key["value"] not in GROUP_KEYS:
+            errors.append(DslError(
+                "E003", f"函数 {name} 的第 2 个参数必须是分组键: {', '.join(sorted(GROUP_KEYS))}",
+                offset=key["offset"], detail={"name": name, "allowed": sorted(GROUP_KEYS)},
+            ))
         return {}
     constants: dict[str, float] = {}
     for index, const_name in enumerate(const_names):
@@ -362,7 +393,8 @@ def _check_call(node: dict, errors: list[DslError]) -> dict[str, float]:
 def _semantic_walk(node: dict, errors: list[DslError], constants_by_call: dict[int, dict]) -> None:
     if node["kind"] == "call":
         constants_by_call[id(node)] = _check_call(node, errors)
-        for child in node["children"]:
+        children = node["children"][:1] if node["value"] in GROUP_OPERATORS else node["children"]
+        for child in children:
             _semantic_walk(child, errors, constants_by_call)
         return
     if node["kind"] == "bin" and node["value"] == "/":
@@ -492,6 +524,28 @@ def _compile_call(node: dict) -> tuple[pl.Expr | None, bool, bool]:
         expr = _rolling_apply(inner, name, int(constants.get("n", 0)), constants)
         return expr, True, False
 
+    if name in GROUP_OPERATORS:
+        inner, inner_window, _ = _compile_node(children[0])
+        if inner is None:
+            return None, False, False
+        if inner_window:
+            inner = inner.over("symbol")
+        group_col = pl.col(GROUP_KEYS[children[1]["value"]])
+        partition = ["date", GROUP_KEYS[children[1]["value"]]]
+        # 组键为 null 的行不成组 (Polars over 会把 null 归为一组, 必须显式屏蔽)
+        value = pl.when(group_col.is_not_null()).then(inner).otherwise(None)
+        count = value.count().over(partition)
+        enough = group_col.is_not_null() & (count >= GROUP_MIN_MEMBERS)
+        if name == "group_rank":
+            out = value.rank(method="average").over(partition) / count
+        elif name == "group_zscore":
+            mean = value.mean().over(partition)
+            std = value.std().over(partition)
+            out = pl.when(std > 0).then((value - mean) / std).otherwise(None)
+        else:
+            out = value.mean().over(partition)
+        return pl.when(enough).then(out).otherwise(None), False, False
+
     if name in CROSS_OPERATORS:
         inner, inner_window, _ = _compile_node(children[0])
         if inner is None:
@@ -585,6 +639,9 @@ def compile_formula(text: str) -> CompiledFormula:
 
     constants_by_call: dict[int, dict] = {}
     _semantic_walk(ast, errors, constants_by_call)
+    group_key_names: set[str] = set()
+    _collect_group_keys(ast, group_key_names)
+    group_keys = frozenset(key for key in group_key_names if key in GROUP_KEYS)
 
     dependencies: set[str] = set()
     referenced_factors: set[str] = set()
@@ -643,7 +700,7 @@ def compile_formula(text: str) -> CompiledFormula:
                 if _contains_cross(child):
                     errors.append(DslError(
                         "E009",
-                        f"截面算子不能嵌在时序窗口内: {node['value']}(...) 的参数含 rank/zscore/winsorize",
+                        f"截面算子不能嵌在时序窗口内: {node['value']}(...) 的参数含 rank/zscore/winsorize/group_*",
                         offset=node["offset"],
                     ))
                     return
@@ -719,14 +776,26 @@ def compile_formula(text: str) -> CompiledFormula:
     # 运行期帧变换: 检查全部引用列 (基准依赖 + 引用因子) 存在, 否则 None (E013 fail-closed)
     required_columns = set(dependencies) | set(referenced_factors)
     staged_exprs = temp_exprs  # 依赖顺序已排
+    group_columns = {GROUP_KEYS[key] for key in group_keys}
 
     def frame_transform(frame: pl.DataFrame) -> pl.DataFrame | None:
         if not required_columns.issubset(set(frame.columns)):
             return None
         result = frame
+        attached: list[str] = []
+        if group_columns - set(frame.columns):
+            # 分组键列按需挂 (行业 = 点时归档 asof, 见 app/factors/relative_strength.py)
+            from app.factors.relative_strength import attach_industry
+
+            if {"symbol", "date"}.issubset(frame.columns):
+                result = attach_industry(result)
+                attached = [col for col in group_columns if col in result.columns and col not in frame.columns]
+            if group_columns - set(result.columns):
+                return None
         if staged_exprs:
             result = result.with_columns(staged_exprs)
-        return result.with_columns(compiled.alias(FACTOR_COLUMN))
+        result = result.with_columns(compiled.alias(FACTOR_COLUMN))
+        return result.drop(attached) if attached else result
 
     return CompiledFormula(
         ok=True,
@@ -737,6 +806,7 @@ def compile_formula(text: str) -> CompiledFormula:
         warmup_bars=warmup,
         cross_sectional=cross_sectional,
         formula_text=text,
+        group_keys=group_keys,
     )
 
 

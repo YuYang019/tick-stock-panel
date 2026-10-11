@@ -365,7 +365,7 @@ def _keltner_mid(df: pl.DataFrame) -> list[dict]:
 
 def _keltner_long(df: pl.DataFrame) -> list[dict]:
     """Keltner 长期:MA120 ± 3×ATR(半年波动带,牛熊趋势边界)。"""
-    return _keltner_band(df, None, 120, 3.0, "长期", "keltner_l")
+    return _keltner_band(df, "ma120", 120, 3.0, "长期", "keltner_l")
 
 
 # ================================================================

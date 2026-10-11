@@ -3790,6 +3790,14 @@ _MATRIX_COMPUTED_FEATURES = frozenset({
 def matrix_feature(market: MarketDataMatrix, name: str) -> np.ndarray:
     if name in {"open", "high", "low", "close", "volume"} or name in market.fields:
         return market.field(name)
+    from app.factors import relative_strength as _rs
+
+    if _rs.is_rs_factor(name):
+        # 相对强度族: 全帧截面/基准 join, 与 panel 评分路径共用同一计算 (relative_strength.matrix_values)
+        return _cached_matrix_operation(
+            "matrix_feature", (market.close, market.volume), {"name": name},
+            lambda: _rs.matrix_values(market, name),
+        )
     supported = (
         name in _MATRIX_COMPUTED_FEATURES
         or (name.startswith("ma") and name.endswith("_bias") and name[2:-5].isdigit())

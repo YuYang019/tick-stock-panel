@@ -14,6 +14,8 @@ const KIND_META: Record<FactorLibraryItem['kind'], { label: string; cls: string 
   virtual: { label: '虚拟', cls: 'bg-accent/10 text-accent' },
   composite: { label: '复合', cls: 'bg-bull/10 text-bull' },
   custom: { label: '自定义', cls: 'bg-amber-400/10 text-amber-500' },
+  // 通达信指标的输出线注册为因子 (ind_{id}_{key}), 在「指标」页维护
+  indicator: { label: '指标', cls: 'bg-sky-400/10 text-sky-500' },
 }
 
 export function FactorLibrary({ onInspect, onEdit }: { onInspect: (factorId: string) => void; onEdit?: (factorId: string) => void }) {
@@ -62,6 +64,7 @@ export function FactorLibrary({ onInspect, onEdit }: { onInspect: (factorId: str
           <option value="virtual">虚拟</option>
           <option value="composite">复合</option>
           <option value="custom">自定义</option>
+          <option value="indicator">指标</option>
         </select>
         <select value={group} onChange={event => setGroup(event.target.value)} className={`${INPUT_CLS} w-28`} aria-label="因子分组">
           <option value="all">全部分组</option>

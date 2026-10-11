@@ -101,6 +101,19 @@ export const QK = {
   customSignals:        ['custom-signals'] as const,
   customSignalsOptions: ['custom-signals-options'] as const,
 
+  // 通达信指标: 'indicators' 为失效前缀 (保存/删除后整族失效)
+  indicators: {
+    all:       ['indicators'] as const,
+    list:      ['indicators', 'list'] as const,
+    functions: ['indicators', 'functions'] as const,
+    validate:  (formula: string) => ['indicators', 'validate', formula] as const,
+    /** ids 需由调用方排序去重, 保证同一组合命中同一 cache */
+    series:    (symbol: string, ids: readonly string[], start: string, end: string) =>
+                 ['indicators', 'series', symbol, ids.join(','), start, end] as const,
+    preview:   (formula: string, symbol: string, start: string, end: string) =>
+                 ['indicators', 'preview', formula, symbol, start, end] as const,
+  },
+
   // Monitor (监控规则 + 触发记录)
   monitorRules:         ['monitor-rules'] as const,
   monitorRuleOptions:   ['monitor-rule-options'] as const,
