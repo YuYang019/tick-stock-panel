@@ -271,3 +271,56 @@ print("draft")
 """
 
     assert AIStrategyGenerator._extract_code_block(content) == RAW_CODE.strip()
+
+
+# --- 回归: pprint 风格 META (迭代修改时 current_code 常见) -----------------------
+# `META = {'id': ...,` 首键与 `{` 同行、续行单空格缩进、`}` 跟在末项同行。
+# 旧版行首正则认不出首行键, 插入点落在 `}` 之外 → "unexpected indent"。
+
+PPRINT_CODE = '''"""知行选股"""
+import polars as pl
+
+META = {'id': 'ai_b128c4e7',
+ 'name': '知行选股',
+ 'description': '旧描述',
+ 'basic_filter': {'price_min': 3,
+                  'exclude_st': True},
+ 'scoring': {'momentum_20d': 0.5, 'ma20_bias': 0.5, 'id': 'nested_not_meta_id'},
+ 'research_only': False}
+
+EXECUTION_BACKEND = "python_history_legacy"
+LOOKBACK_DAYS = 130
+
+
+def filter_history(df: pl.DataFrame, params: dict) -> pl.DataFrame:
+    return df
+'''
+
+
+def test_normalize_pprint_style_meta_keeps_code_valid():
+    code = _normalize_strategy_meta(PPRINT_CODE, "ai_b128c4e7", name="新名字", description="新描述")
+    compile(code, "<strategy>", "exec")
+    meta = AIStrategyGenerator._extract_meta(code)
+    assert meta["id"] == "ai_b128c4e7"
+    assert meta["name"] == "新名字"
+    assert meta["description"] == "新描述"
+    assert meta["scoring"]["id"] == "nested_not_meta_id"  # 嵌套同名键不被误改
+    assert meta["basic_filter"] == {"price_min": 3, "exclude_st": True}
+
+
+def test_normalize_pprint_style_meta_inserts_missing_id():
+    raw = PPRINT_CODE.replace("META = {'id': 'ai_b128c4e7',\n 'name'", "META = {'name'")
+    result = _normalize_build_result({"code": raw, "meta": {}, "valid": True, "error": None}, "ai_new")
+    assert result["valid"] is True, result["error"]
+    assert result["meta"]["id"] == "ai_new"
+
+
+@pytest.mark.parametrize("raw", [
+    'META = {"name": "n", "tags": []}\ndef filter(df, params):\n    return True\n',
+    'META = {\n    "name": "n",\n    "tags": [],\n}\ndef filter(df, params):\n    return True\n',
+    'META = {\n    "name": "n",\n    "tags": []\n}\ndef filter(df, params):\n    return True\n',
+])
+def test_normalize_inserts_id_across_layouts(raw):
+    code = _normalize_strategy_meta(raw, "ai_layout")
+    compile(code, "<strategy>", "exec")
+    assert AIStrategyGenerator._extract_meta(code)["id"] == "ai_layout"
