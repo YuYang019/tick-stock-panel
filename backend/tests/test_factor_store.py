@@ -80,9 +80,9 @@ def test_custom_factor_definition_roundtrip(tmp_path, cleanup_registry) -> None:
     assert "uf_test_rev" in ids and ids.index("uf_test_rev") >= 77
     assert any(s.id == "uf_test_rev" for s in all_factors())
 
-    # 快照约束不受影响: 未注册动态因子时目录 = 78 内置 + 18 相对强度
+    # 快照约束不受影响: 未注册动态因子时目录 = 78 内置 + 19 相对强度
     unregister_factor("uf_test_rev")
-    assert len(factor_columns_view()) == 96
+    assert len(factor_columns_view()) == 97
 
 
 def test_custom_factor_invalid_rejected(cleanup_registry) -> None:

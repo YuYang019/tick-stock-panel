@@ -1149,6 +1149,11 @@ class StrategyBacktestService:
         except ValueError as e:
             return _err(str(e))
 
+        # 策略声明 REGIME_PHASES 且请求未显式传 regime_filter 时以其为默认, 与选股端同口径;
+        # 显式传 {} (空字典) 视为"关闭择时", 用于对照回测。
+        if config.regime_filter is None and getattr(s, "regime_phases", ()):
+            config = replace(config, regime_filter={"phases": list(s.regime_phases)})
+
         params = self._normalize_params(config.params or {}, s)
         overrides = config.overrides or {}
         # 同回测 run 路径: 挖掘运行期也要按资产类型中和股票专属过滤键 (#215)
@@ -2309,16 +2314,13 @@ class StrategyBacktestService:
         required_end: date | None = None,
     ) -> np.ndarray | None:
         """构造逐日 T-1 regime mask, 保留历史静态入口兼容调用方。"""
-        if not regime_filter:
-            return None
-        allowed_states = set(regime_filter.get("states") or [])
-        min_score = regime_filter.get("min_score")
-        if not allowed_states and min_score is None:
+        from app.backtest.regime_alignment import build_regime_filter_mask, regime_filter_active
+
+        if not regime_filter_active(regime_filter):
             return None
         if data_dir is None:
             raise ValueError("市场环境过滤不可用: 未找到环境数据目录")
 
-        from app.backtest.regime_alignment import build_regime_filter_mask
         from app.services import regime_builder
 
         regime_df = regime_builder.load_regime_history(data_dir)
@@ -2326,6 +2328,7 @@ class StrategyBacktestService:
             row["date"]: {
                 "state": row.get("state", ""),
                 "score": row.get("score", 0),
+                "phase": row.get("phase") or "",
             }
             for row in regime_df.iter_rows(named=True)
             if row.get("date") is not None

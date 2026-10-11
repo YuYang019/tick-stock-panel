@@ -50,6 +50,8 @@ MIN_LISTING_BARS = 60
 MIN_MARKET_MEMBERS = 30
 MIN_INDUSTRY_MEMBERS = 5
 NEW_HIGH_WINDOW = 60
+RPS_DELTA_ID = "rps_20_delta_5"  # 截面 rps_20 的时序差分 (先截面后时序, 不能按 rps_ 前缀解析窗口)
+RPS_DELTA_LAG = 5
 SLOPE_WINDOW = 20
 INDUSTRY_CONFIG_ID = "ext_hy_ths"
 INDUSTRY_FIELD = "所属同花顺行业"
@@ -100,6 +102,11 @@ def _build_specs() -> tuple[_registry.FactorSpec, ...]:
             f"excess_{n}", f"{n}日超额收益", f"{n}日对数收益 − 中证全指({BENCHMARK_SYMBOL})同区间对数收益",
             n + 1,
         ))
+    specs.append(_spec(
+        RPS_DELTA_ID, "RPS20五日变化",
+        f"rps_20 − {RPS_DELTA_LAG} 个交易日前的 rps_20 (强度跃升: 刚变强而非一直强)",
+        20 + RPS_DELTA_LAG + 1,
+    ))
     specs.append(_spec(
         "rs_line_new_high_60", "RS线60日新高",
         f"RS线=close/中证全指close; 今日RS ≥ 前{NEW_HIGH_WINDOW}日RS最大值为1, 否则0",
@@ -444,6 +451,19 @@ def compute_relative_strength(frame: pl.DataFrame, names: Collection[str], ctx: 
     wanted = [str(n) for n in dict.fromkeys(names) if is_rs_factor(n) and str(n) not in frame.columns]
     if not wanted or frame.is_empty():
         return frame
+    if RPS_DELTA_ID in wanted:
+        # 先算 rps_20 (截面), 再按 symbol 做时序差分; rps_20 若非调用方所需则用后删除
+        keep_base = "rps_20" in frame.columns or "rps_20" in wanted
+        rest = [n for n in wanted if n != RPS_DELTA_ID]
+        frame = compute_relative_strength(frame, [*rest, "rps_20"], ctx)
+        if "rps_20" not in frame.columns:
+            return frame
+        order = pl.int_range(pl.len()).alias(f"{_TMP_PREFIX}ri")
+        work = frame.select("symbol", pl.col("date").cast(pl.Date), "rps_20", order).sort(["symbol", "date"])
+        delta = (pl.col("rps_20") - pl.col("rps_20").shift(RPS_DELTA_LAG).over("symbol")).alias(RPS_DELTA_ID)
+        values = work.with_columns(delta).sort(f"{_TMP_PREFIX}ri")[RPS_DELTA_ID].cast(pl.Float64)
+        frame = frame.with_columns(values)
+        return frame if keep_base else frame.drop("rps_20")
     if not {"symbol", "date", "close"}.issubset(frame.columns):
         logger.warning("RS factors skipped: frame lacks symbol/date/close")
         return frame

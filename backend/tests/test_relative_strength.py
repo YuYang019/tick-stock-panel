@@ -361,3 +361,27 @@ def test_custom_signals_history_path_materializes_rs(monkeypatch):
     out = custom_signals.materialize_factor_columns(_frame(), exprs)
     assert "rps_60" in out.columns
     assert out.filter(pl.col("date") == _dates()[-1])["rps_60"].is_not_null().all()
+
+
+def test_rps_20_delta_5_is_time_diff_of_cross_sectional_rps20():
+    frame = _frame()
+    ctx = _ctx()
+    both = rs.compute_relative_strength(frame, ["rps_20", "rps_20_delta_5"], ctx)
+    only = rs.compute_relative_strength(frame, ["rps_20_delta_5"], ctx)
+    assert "rps_20" not in only.columns  # 中间列不外泄
+    expected = (
+        both.sort(["symbol", "date"])
+        .with_columns((pl.col("rps_20") - pl.col("rps_20").shift(5).over("symbol")).alias("_e"))
+        .sort(["symbol", "date"])
+    )
+    got = only.sort(["symbol", "date"])["rps_20_delta_5"].to_list()
+    assert got == expected["_e"].to_list()
+    assert any(v is not None for v in got)
+
+
+def test_rps_20_delta_5_registered_with_warmup():
+    from app.factors.registry import get_factor
+
+    spec = get_factor("rps_20_delta_5")
+    assert spec is not None and spec.group == "相对强度" and spec.warmup_bars == 26
+    assert "rps_20_delta_5" in rs.CROSS_SECTION_FACTOR_IDS
