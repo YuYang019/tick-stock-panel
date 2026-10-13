@@ -8,6 +8,7 @@ import { installTspExtBridge, loadRuntimePageExtensions } from './extensions/run
 import { api } from './lib/api'
 import { QK } from './lib/queryKeys'
 import { cn } from './lib/cn'
+import { installEChartsZoomFix } from './lib/echartsZoomFix'
 import * as format from './lib/format'
 import { createAppPersister, shouldPersistQuery, PERSIST_BUSTER } from './lib/queryPersist'
 // 字体自托管 (@fontsource): 替代 rsms.me / Google Fonts 渲染阻塞外链,
@@ -23,6 +24,9 @@ import '@fontsource/jetbrains-mono/500.css'
 import '@fontsource/jetbrains-mono/600.css'
 import '@fontsource/jetbrains-mono/700.css'
 import './index.css'
+
+// 界面缩放 (CSS zoom) 下修正 ECharts 指针坐标, 须在任何图表挂载前安装
+installEChartsZoomFix()
 
 // 全局认证拦截: 任何 query/mutation 收到 401 (未登录/会话过期) → 跳登录页。
 // api.ts 的 request() 已对 401 静默 (不弹 toast), 这里统一负责跳转。
