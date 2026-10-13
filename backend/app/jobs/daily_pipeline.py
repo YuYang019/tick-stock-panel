@@ -173,6 +173,11 @@ def _resolve_universe(capset: CapabilitySet, repo=None) -> list[str]:
     return sorted(base)
 
 
+def _daily_partition_dates(repo: KlineRepository) -> list:
+    from app.services.daily_readiness import _partition_dates
+    return _partition_dates(repo.store.data_dir / "kline_daily")
+
+
 def run_instruments_sync(repo: KlineRepository) -> dict:
     """盘前同步个股维表。
 
@@ -235,6 +240,7 @@ def run_now(
     today = cn_today()
     today_exists = latest_daily and latest_daily >= today
     new_daily_days = 0
+    daily_dates_before = set(_daily_partition_dates(repo))
 
     # 完整性自愈: 检测最近交易日的盘中快照/缺口 (盘中停机后次日开实时会留下
     # 中午快照, 而下方"今天已有数据→只刷今天"分支会让它永久留存)。
@@ -286,10 +292,8 @@ def run_now(
             end_date=_dt.combine(today, _dt.min.time()),
             on_chunk_done=_daily_chunk_progress,
         )
-        gap_days = (today - start_date).days
-        new_daily_days = gap_days
-        emit("sync_daily", 45, f"日K 完成,覆盖 {gap_days} 天")
-        logger.info("sync_daily: [%s ~ %s] done, %d days", start_date, today, gap_days)
+        logger.info("sync_daily: [%s ~ %s] requested, %d rows written",
+                    start_date, today, written_daily)
     elif (
         today_exists
         and stale_day is None
@@ -303,8 +307,7 @@ def run_now(
         # 也降级到下方 batch 路径刷新,避免调用无权限的实时行情接口。
         emit("sync_daily", 12, f"获取日K [{today} ~ {today}] 实时行情…")
         written_daily = kline_sync.sync_daily_by_quotes(repo)
-        new_daily_days = 1
-        emit("sync_daily", 45, f"日K 完成,{written_daily} 只标的")
+        emit("sync_daily", 44, f"日K 实时行情写入 {written_daily} 只标的")
         logger.info("sync_daily: [%s ~ %s] live quotes, %d symbols", today, today, written_daily)
     elif latest_daily or stale_day:
         # 有历史 → batch 补齐缺口。
@@ -327,10 +330,8 @@ def run_now(
             end_date=_dt.combine(today, _dt.min.time()),
             on_chunk_done=_daily_chunk_progress,
         )
-        gap_days = (today - start_date).days
-        new_daily_days = gap_days
-        emit("sync_daily", 45, f"日K 完成,覆盖 {gap_days} 天")
-        logger.info("sync_daily: [%s ~ %s] done, %d days", start_date, today, gap_days)
+        logger.info("sync_daily: [%s ~ %s] requested, %d rows written",
+                    start_date, today, written_daily)
     else:
         # 首次：无任何数据 → batch 拉 1 年
         start_date = today - _td(days=365)
@@ -347,10 +348,23 @@ def run_now(
             end_date=_dt.combine(today, _dt.min.time()),
             on_chunk_done=_daily_chunk_progress,
         )
-        new_daily_days = 365
-        emit("sync_daily", 45, "日K 完成")
-        logger.info("sync_daily: [%s ~ %s] done", start_date, today)
+        logger.info("sync_daily: [%s ~ %s] initial fetch requested", start_date, today)
     _invalidate("daily")
+
+    # 按真实落盘结果报告: 请求跨度 ≠ 新增天数 (上游当日未发布时请求 [昨天 ~ 今天]
+    # 只会返回昨天)。新增 = 本次同步后出现的新日期分区数。
+    daily_dates_after = set(_daily_partition_dates(repo))
+    new_daily_days = len(daily_dates_after - daily_dates_before)
+    daily_latest_after = max(daily_dates_after) if daily_dates_after else None
+    if pull_a_share or override_start_date:
+        if daily_latest_after is not None and daily_latest_after >= today:
+            emit("sync_daily", 45, f"日K 完成,新增 {new_daily_days} 天,最新 {daily_latest_after}")
+        else:
+            emit("sync_daily", 45,
+                 f"日K 完成,新增 {new_daily_days} 天,最新 {daily_latest_after or '无'}"
+                 f"(上游暂无 {today} 数据)")
+        logger.info("sync_daily: new %d days, latest=%s, target=%s",
+                    new_daily_days, daily_latest_after, today)
 
     # 完整性修复时删除股票 enriched 的坏分区: 增量重算只算 enriched 里不存在
     # 的日期, 盘中快照日分区已存在(虽是错的), 不删永远不会被重算。删除后
@@ -772,9 +786,18 @@ def run_now(
     emit("done", 100, "完成")
     _invalidate(None)  # 兜底:全清
 
+    from app.services.daily_readiness import check_ready
+    readiness = check_ready(repo.store.data_dir, today)
+
     result = {
         "universe_size": len(universe),
         "daily_days": new_daily_days,
+        "target_date": readiness.target_date,
+        "daily_latest": readiness.daily_latest,
+        "enriched_latest": readiness.enriched_latest,
+        "index_latest": readiness.index_latest,
+        "ready": readiness.ready,
+        "not_ready_reasons": readiness.reasons,
         "adj_factor_symbols": len(affected_symbols),
         "enriched_days": written_enriched,
         "index_count": index_count,
@@ -1031,9 +1054,22 @@ def _run_tracked(fn, job_label: str) -> bool:
     return succeeded
 
 
-def _scheduled_pipeline_task(pipeline_fn) -> None:
-    """Run weekly mining only after the tracked daily pipeline has fully succeeded."""
-    if not _run_tracked(pipeline_fn, "daily_pipeline"):
+def _scheduled_pipeline_task(pipeline_fn, source: str = "scheduled") -> None:
+    """定时/补拉管道: 跑完判定当日就绪 (未就绪安排补拉, 就绪触发等待中的复盘)。
+
+    周挖掘只在管道成功且当日数据就绪时触发 (补拉多次也只在就绪那次触发)。
+    阶段软失败 (succeeded=False) 也做就绪判定: 日K/指标可能已齐, 不应因
+    模拟盘等无关阶段报错而反复补拉。
+    """
+    from app.jobs import post_close
+
+    succeeded = _run_tracked(pipeline_fn, "daily_pipeline" if source == "scheduled" else "daily_pipeline_retry")
+    try:
+        ready = post_close.after_pipeline(source)
+    except Exception:
+        logger.exception("post_close hook failed")
+        ready = False
+    if not (succeeded and ready):
         return
     try:
         from app.services.mining_schedule import run_weekly_mining
@@ -1051,7 +1087,7 @@ def _scheduled_pipeline_task(pipeline_fn) -> None:
 REVIEW_JOB_ID = "scheduled_review"
 
 
-async def _run_scheduled_review(repo) -> None:
+async def _run_scheduled_review(repo, target=None) -> None:
     """定时复盘 job: 流式生成复盘 → 实时推 SSE(开着页面可见) → 落盘归档 → 推飞书。
 
     与手动「生成复盘」体验一致: 流式事件经 quote_service.push_review_event →
@@ -1059,9 +1095,19 @@ async def _run_scheduled_review(repo) -> None:
     即可看到报告边生成边显示, 切走再回来也能看到生成中/已生成。
     LLM 偶发断流(peer closed connection)时自动重试最多 2 次。
     任何异常都吞掉只记日志, 绝不影响调度器主循环。
+
+    日期门控: 复盘日期固定为北京「今天」(target), 显式传给数据装配, 绝不回退
+    到最新有数据日。当日数据未就绪 → 进入等待 (post_close 补拉就绪后再触发);
+    当日定时复盘已归档 → 跳过, 每天最多自动归档一次。
     """
+    import asyncio
     import json
 
+    from app.jobs import post_close
+
+    began = False
+    archived = False
+    day = target or cn_today()
     try:
         from app import secrets_store as ss
         from app.services import market_recap_reports
@@ -1070,12 +1116,34 @@ async def _run_scheduled_review(repo) -> None:
         if not ss.get_ai_key():
             logger.info("scheduled review skipped: AI key not configured")
             return
+        if not _prefs.get_review_schedule()["enabled"]:
+            logger.info("scheduled review skipped: disabled")
+            return
+        if day != cn_today():
+            logger.info("scheduled review skipped: %s 已跨日", day)
+            return
+        if await asyncio.to_thread(post_close._is_trading_day, day) is False:
+            logger.info("scheduled review skipped: %s 休市", day)
+            return
+        if post_close.auto_review_archived(day):
+            logger.info("scheduled review skipped: %s 已归档", day)
+            return
+        readiness = await asyncio.to_thread(post_close.check_ready, day)
+        if not readiness.ready:
+            logger.warning("scheduled review waiting: %s 数据未就绪: %s",
+                           day, "; ".join(readiness.reasons))
+            post_close.mark_review_waiting(day, readiness.reasons)
+            return
+        if not post_close.try_begin_review():
+            logger.info("scheduled review skipped: 已有复盘在生成")
+            return
+        began = True
 
         app_state = _get_app_state()
         quote_service = getattr(app_state, "quote_service", None) if app_state else None
         depth_service = getattr(app_state, "depth_service", None) if app_state else None
 
-        content, meta = await _stream_review_with_retry(repo, quote_service, depth_service)
+        content, meta = await _stream_review_with_retry(repo, quote_service, depth_service, as_of=day)
         if not content:
             logger.warning("scheduled review produced no content (meta=%s)", meta)
             # 通知前端进入 error 态(若有页面在听)
@@ -1084,8 +1152,16 @@ async def _run_scheduled_review(repo) -> None:
                     {"type": "error", "message": "复盘生成失败,请稍后手动重试"},
                     ensure_ascii=False))
             return
+        # 归档前再核对报告日期: 任何回退到旧日的结果一律丢弃
+        if meta.get("as_of") != day.isoformat():
+            logger.error("scheduled review discarded: as_of=%s != target %s", meta.get("as_of"), day)
+            if quote_service:
+                quote_service.push_review_event(json.dumps(
+                    {"type": "error", "message": f"复盘日期({meta.get('as_of')})与今日不符,已丢弃"},
+                    ensure_ascii=False))
+            return
 
-        # 落盘: 与手动生成完全相同的归档格式
+        # 落盘: 与手动生成相同的归档格式, source 标记定时来源 (用于每日去重)
         market_recap_reports.save_report({
             "as_of": meta.get("as_of"),
             "focus": "",
@@ -1093,7 +1169,9 @@ async def _run_scheduled_review(repo) -> None:
             "summary": meta.get("summary", ""),
             "emotion_score": meta.get("emotion_score"),
             "emotion_label": meta.get("emotion_label", ""),
+            "source": post_close.REPORT_SOURCE,
         })
+        archived = True
         logger.info("scheduled review saved: as_of=%s", meta.get("as_of"))
 
         # 通知前端: 生成完成且已归档(archived=true 让前端只刷新列表, 不重复归档)
@@ -1119,9 +1197,12 @@ async def _run_scheduled_review(repo) -> None:
                     ensure_ascii=False))
         except Exception:  # noqa: BLE001
             pass
+    finally:
+        if began:
+            post_close.end_review(day, archived)
 
 
-async def _stream_review_with_retry(repo, quote_service, depth_service) -> tuple[str, dict]:
+async def _stream_review_with_retry(repo, quote_service, depth_service, as_of=None) -> tuple[str, dict]:
     """流式生成复盘, 每个事件推 SSE + 累积内容。LLM 断流时最多重试 2 次。
 
     返回 (content, meta)。重试时推一个 retry 事件让前端清空已累积内容重新开始。
@@ -1140,7 +1221,7 @@ async def _stream_review_with_retry(repo, quote_service, depth_service) -> tuple
         content_parts = []  # 每次重试重新累积
         failed = False
         try:
-            async for evt_json in recap_market_stream(repo, quote_service, depth_service):
+            async for evt_json in recap_market_stream(repo, quote_service, depth_service, as_of):
                 evt = json.loads(evt_json)
                 t = evt.get("type")
 
@@ -1398,6 +1479,11 @@ def start_scheduler(repo: KlineRepository, capset: CapabilitySet) -> AsyncIOSche
         _register_review_job(scheduler, repo, review_sched["hour"], review_sched["minute"])
         logger.info("scheduled_review enabled @%02d:%02d mon-fri",
                     review_sched["hour"], review_sched["minute"])
+
+    # 盘后补拉/复盘门控: 补拉复用同一管道闭包; 重启后按磁盘数据与报告归档恢复等待
+    from app.jobs import post_close
+    post_close.configure(scheduler, repo, _pipeline_then_refresh)
+    post_close.schedule_recover()
 
     scheduler.start()
     logger.info("scheduler started; instruments@%02d:%02d, pipeline@%02d:%02d, depth@%02d:%02d mon-fri",

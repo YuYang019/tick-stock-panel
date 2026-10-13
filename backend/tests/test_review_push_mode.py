@@ -92,8 +92,21 @@ def _patch_scheduled_review(monkeypatch, pushed: list, archived: list):
     async def _fake_stream(*a, **k):
         return "正文", {"as_of": "2026-07-18", "emotion_label": "中性"}
 
+    from datetime import date
+    from types import SimpleNamespace
+
+    from app.jobs import post_close
+
     monkeypatch.setattr("app.secrets_store.get_ai_key", lambda: "sk-test")
     monkeypatch.setattr(daily_pipeline, "_stream_review_with_retry", _fake_stream)
+    # 日期门控: 今天=报告日, 已开启, 交易日, 数据就绪, 未归档
+    monkeypatch.setattr(daily_pipeline, "cn_today", lambda: date(2026, 7, 18))
+    monkeypatch.setattr(preferences, "get_review_schedule",
+                        lambda: {"enabled": True, "hour": 16, "minute": 0})
+    monkeypatch.setattr(post_close, "_is_trading_day", lambda d: True)
+    monkeypatch.setattr(post_close, "auto_review_archived", lambda d: False)
+    monkeypatch.setattr(post_close, "check_ready",
+                        lambda d: SimpleNamespace(ready=True, reasons=[]))
     monkeypatch.setattr(
         "app.services.market_recap_reports.save_report",
         lambda d: archived.append(d) or {"id": "r1"},

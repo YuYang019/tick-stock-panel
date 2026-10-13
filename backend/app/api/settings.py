@@ -1969,6 +1969,8 @@ def update_review_schedule(req: ReviewScheduleIn, request: Request) -> dict:
                 logger.info("scheduled_review disabled (job removed)")
             except Exception:
                 pass  # job 本就不存在(从未开过), 无需处理
+            from app.jobs import post_close
+            post_close.cancel_review_waiting()
 
     return sched
 
