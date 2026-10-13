@@ -217,6 +217,11 @@ export function useQuoteStream(
         try {
           const evt = JSON.parse(e.data)
           feedReviewEvent(evt)
+          // status: 定时复盘等待当日数据 / 截止仍未就绪, 只提示不改生成状态
+          if (evt.type === 'status' && evt.message) {
+            toast(evt.message, evt.level === 'error' ? 'error' : 'success')
+            return
+          }
           // done(后端已归档) → 刷新历史列表, 让新报告出现并可查看
           if (evt.type === 'done') {
             qc.invalidateQueries({ queryKey: QK.reviewReports })

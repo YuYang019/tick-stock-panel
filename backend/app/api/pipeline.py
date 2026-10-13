@@ -44,10 +44,20 @@ async def trigger_pipeline_job(repo, capset, quote_service=None) -> dict:
     return await _submit_job(
         repo, quote_service,
         lambda progress: (lambda: daily_pipeline.run_now(repo, capset, on_progress=progress)),
+        after=_after_manual_pipeline,
     )
 
 
-async def _submit_job(repo, quote_service, make_run) -> dict:
+def _after_manual_pipeline() -> None:
+    """手动同步结束后判定当日就绪: 补齐则触发等待中的定时复盘, 并停止补拉。"""
+    from app.jobs import post_close
+    try:
+        post_close.after_pipeline("manual")
+    except Exception:  # noqa: BLE001
+        logger.exception("post_close hook after manual pipeline failed")
+
+
+async def _submit_job(repo, quote_service, make_run, after=None) -> dict:
     """任务化执行公共机制: 单飞 create → 重任务槽 → 行情暂停 → 缓存失效。
 
     make_run(progress) 返回实际执行闭包(阻塞 IO + CPU, 在 executor 里跑)。
@@ -92,6 +102,8 @@ async def _submit_job(repo, quote_service, make_run) -> dict:
             result = await loop.run_in_executor(_long_task_executor, run_with_capacity, job_id, _run)
             job_store.succeed(job_id, result)
             invalidate_storage_cache()
+            if after is not None:
+                await loop.run_in_executor(None, after)
         except JobCancelledError:
             # 已被 reap/手动取消终止: job 状态已由 terminate() 写为 failed,
             # 拉取线程在分块回调处自行退出, 这里无需(也无法)再写状态。
@@ -100,6 +112,9 @@ async def _submit_job(repo, quote_service, make_run) -> dict:
             logger.exception("pipeline job failed")
             job_store.fail(job_id, str(e))
             invalidate_storage_cache()
+            # 阶段软失败时日K/指标仍可能已齐, 照样判定就绪
+            if after is not None:
+                await asyncio.get_event_loop().run_in_executor(None, after)
         finally:
             release_run_slot(job_id)
 
