@@ -38,7 +38,7 @@ function getContent(task: ActiveTask | HistoryReport | null): string {
 function getMeta(task: ActiveTask | HistoryReport | null) {
   if (!task) return null
   if ('meta' in task) return task.meta
-  return { summary: task.summary, close: task.close, levels: task.levels }
+  return { summary: task.summary, close: task.close, levels: task.levels, ta_eval: null }
 }
 
 export function StockAnalysisDialog({ task, mode, minimized }: Props) {
@@ -115,6 +115,27 @@ export function StockAnalysisDialog({ task, mode, minimized }: Props) {
                   {task && <span className="text-xs text-secondary truncate">{task.name}</span>}
                   {task && <span className="text-[10px] font-mono text-muted shrink-0">{task.symbol}</span>}
                 </div>
+                {meta?.ta_eval && (
+                  <div className="mt-1 flex flex-wrap items-center gap-1 text-[10px]">
+                    <span className="rounded bg-accent/10 px-1.5 py-px text-accent">
+                      规则评分 {meta.ta_eval.composite ?? '—'} · {meta.ta_eval.rule_label ?? '—'}
+                    </span>
+                    {meta.ta_eval.cycle_phase && (
+                      <span className="rounded bg-elevated px-1.5 py-px text-secondary">
+                        周期 {meta.ta_eval.cycle_phase}
+                      </span>
+                    )}
+                    {meta.ta_eval.tree_label && (
+                      <span className="rounded bg-elevated px-1.5 py-px text-secondary">{meta.ta_eval.tree_label}</span>
+                    )}
+                    {(meta.ta_eval.principle_checks ?? [])
+                      .filter(c => c.result === 'hit' && c.tag)
+                      .slice(0, 3)
+                      .map(c => (
+                        <span key={c.id} className="rounded bg-warning/10 px-1.5 py-px text-warning">{c.tag}</span>
+                      ))}
+                  </div>
+                )}
                 <div className="flex items-center gap-2 mt-0.5 text-[10px] text-muted">
                   {meta?.summary ? (
                     <span className="flex items-center gap-1 truncate">

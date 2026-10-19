@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react'
-import { api, friendlyStreamError, type PriceLevel, type LevelType } from './api'
+import { api, friendlyStreamError, type PriceLevel, type LevelType, type TaEval } from './api'
 
 /**
  * AI 个股分析 —— 全局任务/报告 store(与 aiReportStore 解耦、并行存在)。
@@ -26,6 +26,7 @@ export interface ActiveTask {
     summary?: string
     levels?: Record<LevelType, PriceLevel[]>
     close?: number | null
+    ta_eval?: TaEval | null
   } | null
   createdAt: number
   savedReportId?: string
@@ -195,7 +196,12 @@ async function runStream(id: string, symbol: string, _name: string, focus: strin
       if (!cur) return
       switch (chunk.type) {
         case 'meta':
-          patchTask(id, { meta: { summary: chunk.summary, levels: chunk.levels, close: chunk.close } })
+          patchTask(id, {
+            meta: {
+              summary: chunk.summary, levels: chunk.levels, close: chunk.close,
+              ta_eval: chunk.ta_eval ?? null,
+            },
+          })
           break
         case 'delta':
           if (firstDelta) { patchTask(id, { phase: 'streaming' }); firstDelta = false }

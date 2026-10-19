@@ -19,7 +19,7 @@ export type WidgetType =
   | 'indices' | 'kpi' | 'distribution' | 'radar' | 'trend'
   | 'concept-rank' | 'industry-rank'
   | 'gainers' | 'losers' | 'turnover' | 'activity'
-  | 'ladder' | 'monitor' | 'ext-link'
+  | 'ladder' | 'monitor' | 'ext-link' | 'sentiment-cycle'
 
 export interface DashboardItem {
   /** 实例 id: 内置组件 = type; 外部链接 = ext-link-<seq> */

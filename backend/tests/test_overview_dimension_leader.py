@@ -87,3 +87,29 @@ def test_leader_still_picks_max_when_all_positive(tmp_path):
 
     items = {item["name"]: item for item in result["leading"]}
     assert items["光伏"]["leader"]["name"] == "涨多"
+
+
+def test_sector_memberships_reads_ext_mapping(tmp_path):
+    from app.services.market_overview_builder import sector_memberships
+
+    _write_concept_ext(tmp_path, {
+        "000001.SZ": "人工智能,机器人",
+        "000002.SZ": "芯片",
+    })
+    repo = _fake_repo(tmp_path)
+    assert set(sector_memberships(repo, "000001.SZ", "concept")) == {"人工智能", "机器人"}
+    assert sector_memberships(repo, "000002", "concept") == ["芯片"]   # 裸代码也能匹配
+    assert sector_memberships(repo, "999999.SZ", "concept") == []
+    assert sector_memberships(repo, "000001.SZ", "industry") == []      # 无行业字段
+
+
+def test_dimension_rank_all_is_not_truncated(tmp_path):
+    from app.services.market_overview_builder import dimension_rank_all
+
+    mapping = {f"{i:06d}.SZ": f"概念{i}" for i in range(8)}
+    _write_concept_ext(tmp_path, mapping)
+    rows = [{"symbol": s, "name": s, "change_pct": i / 100, "amount": 1e8}
+            for i, s in enumerate(mapping)]
+    ranked = dimension_rank_all(rows, _fake_repo(tmp_path), "concept")
+    assert len(ranked) == 8                          # 不截断到 top5
+    assert ranked[0]["name"] == "概念7"              # 平均涨跌降序

@@ -136,6 +136,11 @@ export const QK = {
 
   // AI 大盘复盘
   reviewReports:        ['review-reports'] as const,
+  sentimentCycle:       (asOf?: string) => ['sentiment-cycle', asOf ?? 'latest'] as const,
+  taMethods:            ['ta-methods'] as const,
+  taMethod:             (id: string) => ['ta-method', id] as const,
+  marketStyle:          (asOf?: string) => ['market-style', asOf ?? 'latest'] as const,
+  sectorCycles:         (kind: string) => ['sector-cycles', kind] as const,
 
   // 概念涨幅轮动矩阵
   rpsRotation:          (days: number) => ['rps-rotation', days] as const,

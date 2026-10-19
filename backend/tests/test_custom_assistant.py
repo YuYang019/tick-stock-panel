@@ -383,7 +383,7 @@ def test_local_tool_schemas_cover_page_capabilities() -> None:
         "get_stock_quote", "get_stock_daily", "get_stock_analysis", "get_financials",
         "get_watchlist", "get_market_overview", "get_indices", "get_sector_rotation",
         "get_regime", "get_abnormal", "get_lots", "list_signals", "run_strategy",
-        "get_factor_values",
+        "get_factor_values", "web_search", "web_fetch", "get_sentiment_cycle",
     }
     assert expected <= names
 
@@ -434,3 +434,34 @@ def test_http_chat_endpoint_streams_ndjson(monkeypatch: pytest.MonkeyPatch) -> N
     assert events[0]["type"] == "error"
     assert events[0]["kind"] == "no_key"
     assert events[-1]["type"] == "done"
+
+
+async def test_web_tools_require_configured_search(monkeypatch) -> None:
+    """联网工具未配置时按工具错误契约返回 ok=False, 不打断对话。"""
+    from app.services import web_search
+
+    monkeypatch.setattr(web_search, "current_config", lambda: dict(web_search.DEFAULT_CONFIG))
+    ctx = assistant_tools.ToolContext.build()
+    payload = await assistant_tools.execute_assistant_tool("web_search", {"query": "测试"}, ctx)
+    assert payload["ok"] is False
+    assert "未启用" in payload["error"]
+
+
+async def test_web_tools_quota_per_turn(monkeypatch) -> None:
+    from app.services import web_search
+
+    monkeypatch.setattr(web_search, "current_config", lambda: {
+        **web_search.DEFAULT_CONFIG, "enabled": True,
+    })
+    monkeypatch.setattr(web_search, "key_status", lambda: {"configured": True})
+    monkeypatch.setattr(web_search, "search", lambda query, **kw: [
+        {"title": "t", "url": "https://e.com", "snippet": "s", "summary": "s",
+         "site_name": "x", "date": ""},
+    ])
+    ctx = assistant_tools.ToolContext.build()
+    assistant_tools.reset_web_quota(ctx)
+    for _ in range(assistant_tools._MAX_WEB_CALLS_PER_TURN):
+        assert (await assistant_tools.execute_assistant_tool("web_search", {"query": "q"}, ctx))["ok"]
+    payload = await assistant_tools.execute_assistant_tool("web_search", {"query": "q"}, ctx)
+    assert payload["ok"] is False
+    assert "上限" in payload["error"]

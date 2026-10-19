@@ -194,6 +194,8 @@ async def chat_stream(
         financial_scheduler=financial_scheduler,
     )
 
+    assistant_tools.reset_web_quota(tool_ctx)
+
     queue: asyncio.Queue = asyncio.Queue()
     sentinel: object = object()
 

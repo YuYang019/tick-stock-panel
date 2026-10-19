@@ -274,6 +274,73 @@ def _leader_sort_key(row: dict) -> float:
     return value if value is not None else float("-inf")
 
 
+def sector_memberships(repo, symbol: str, kind: str, level: int | None = None) -> list[str]:
+    """标的所属的概念/行业名称列表 (与 _dimension_rank 同一份扩展数据与拆级规则)。
+
+    归属来自用户配置的扩展数据表 (含「概念/行业」字段), 无配置时返回空列表。
+    """
+    target = str(symbol or "").strip().upper()
+    if not target:
+        return []
+    keys = {target, target.split(".", 1)[0]}
+    store = ExtConfigStore(repo.store.data_dir)
+    out: list[str] = []
+    for config in store.load_all():
+        field = _dimension_field(config, kind)
+        if not field:
+            continue
+        for ext_row in _read_ext_rows(repo.store.data_dir, config, field):
+            if not keys.intersection(_symbol_keys(ext_row, config)):
+                continue
+            for value in _dimension_values(ext_row.get(field)):
+                if level is not None and "-" in value:
+                    parts = value.split("-")
+                    value = parts[level - 1] if level <= len(parts) else parts[-1]
+                if value not in out:
+                    out.append(value)
+    return out
+
+
+def sector_member_map(repo, kind: str, level: int | None = None) -> dict[str, set[str]]:
+    """板块 → 成分股代码键集合 (含带后缀与裸代码两种形式, 与 _dimension_rank 同口径)。
+
+    一次遍历扩展数据, 供板块周期等需要全部板块成分的场景使用, 避免逐股反查。
+    """
+    store = ExtConfigStore(repo.store.data_dir)
+    out: dict[str, set[str]] = {}
+    for config in store.load_all():
+        field = _dimension_field(config, kind)
+        if not field:
+            continue
+        for ext_row in _read_ext_rows(repo.store.data_dir, config, field):
+            keys = set(_symbol_keys(ext_row, config))
+            if not keys:
+                continue
+            for value in _dimension_values(ext_row.get(field)):
+                if level is not None and "-" in value:
+                    parts = value.split("-")
+                    value = parts[level - 1] if level <= len(parts) else parts[-1]
+                out.setdefault(value, set()).update(keys)
+    return out
+
+
+def symbol_sector_map(repo, kind: str, level: int | None = None) -> dict[str, list[str]]:
+    """代码键 → 所属板块列表 (sector_member_map 的反向索引)。"""
+    out: dict[str, list[str]] = {}
+    for sector, keys in sector_member_map(repo, kind, level).items():
+        for key in keys:
+            bucket = out.setdefault(key, [])
+            if sector not in bucket:
+                bucket.append(sector)
+    return out
+
+
+def dimension_rank_all(rows: list[dict], repo, kind: str, level: int | None = None) -> list[dict]:
+    """全量板块排名 (按平均涨跌降序), 供板块强弱分位计算。"""
+    ranked = _dimension_rank(rows, repo, kind, limit=10_000, level=level)
+    return ranked.get("leading") or []
+
+
 def _dimension_rank(rows: list[dict], repo, kind: str, limit: int = 5, level: int | None = None) -> dict:
     if not rows:
         return {"leading": [], "lagging": []}

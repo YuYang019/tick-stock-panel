@@ -121,6 +121,15 @@ export function ReviewPage() {
   const reviewPushChannels = prefs.data?.review_push_channels ?? []
   // 推送触发方式: auto=归档即推; manual=仅归档不自动外发。默认 manual。
   const reviewPushMode = prefs.data?.review_push_mode ?? 'manual'
+  // 自选股章节: 独立偏好, 开关即时生效、数字在失焦时提交 (不随定时弹窗的保存按钮提交)
+  const reviewWatchlist = prefs.data?.review_watchlist ?? {
+    enabled: true, group_ids: [], max_rows: 30, max_detail: 10, news_top: 5,
+  }
+  const watchlistMut = useMutation({
+    mutationFn: (cfg: typeof reviewWatchlist) => api.updateReviewWatchlist(cfg),
+    onSuccess: () => qc.invalidateQueries({ queryKey: QK.preferences }),
+    onError: () => { /* request() 已 toast */ },
+  })
   // 弹窗内的本地草稿: 开关和时间都在本地改, 点「保存」才真正提交(避免开关一拨就关弹窗)
   const [draft, setDraft] = useState(reviewSched)
   const openSchedule = useCallback(() => {
@@ -580,6 +589,56 @@ export function ReviewPage() {
                       前往配置 →
                     </Link>
                   )}
+                </p>
+              </div>
+
+              {/* 自选股复盘章节: 与大盘复盘同一次生成, 独立开关与截断 */}
+              <div className="mt-3 rounded-btn bg-elevated/40 px-3 py-2.5">
+                <label className="flex items-center justify-between">
+                  <span className="text-xs text-foreground">复盘包含自选股分析</span>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={reviewWatchlist.enabled}
+                    onClick={() => watchlistMut.mutate({ ...reviewWatchlist, enabled: !reviewWatchlist.enabled })}
+                    className={cn(
+                      'relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors',
+                      reviewWatchlist.enabled ? 'bg-accent' : 'bg-border',
+                    )}
+                  >
+                    <span className={cn('inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform', reviewWatchlist.enabled ? 'translate-x-[18px]' : 'translate-x-1')} />
+                  </button>
+                </label>
+                {reviewWatchlist.enabled && (
+                  <div className="mt-2 flex items-center gap-3">
+                    <label className="flex items-center gap-1.5 text-[11px] text-muted">
+                      总表上限
+                      <input
+                        type="number" min={1} max={100} defaultValue={reviewWatchlist.max_rows}
+                        key={`rows-${reviewWatchlist.max_rows}`}
+                        onBlur={e => {
+                          const v = Math.max(1, Math.min(100, Number(e.target.value) || 1))
+                          if (v !== reviewWatchlist.max_rows) watchlistMut.mutate({ ...reviewWatchlist, max_rows: v })
+                        }}
+                        className="w-12 rounded-btn border border-border bg-base px-1.5 py-0.5 text-center font-mono text-[11px] text-foreground focus:outline-none focus:border-accent/50"
+                      />
+                    </label>
+                    <label className="flex items-center gap-1.5 text-[11px] text-muted">
+                      详述只数
+                      <input
+                        type="number" min={1} max={30} defaultValue={reviewWatchlist.max_detail}
+                        key={`detail-${reviewWatchlist.max_detail}`}
+                        onBlur={e => {
+                          const v = Math.max(1, Math.min(30, Number(e.target.value) || 1))
+                          if (v !== reviewWatchlist.max_detail) watchlistMut.mutate({ ...reviewWatchlist, max_detail: v })
+                        }}
+                        className="w-12 rounded-btn border border-border bg-base px-1.5 py-0.5 text-center font-mono text-[11px] text-foreground focus:outline-none focus:border-accent/50"
+                      />
+                    </label>
+                  </div>
+                )}
+                <p className="mt-1.5 text-[10px] leading-relaxed text-muted/70">
+                  按异动分排序, 超出上限的只计数; 开启联网搜索时会为异动股补充公告/消息。
                 </p>
               </div>
 

@@ -9,6 +9,7 @@ import { useSettings } from '@/lib/useSharedQueries'
 import { api, type SettingsState, type SponsorModelItem } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
 import { AnchorWrap } from '@/lib/useCardFlash'
+import { WebSearchCard } from './WebSearchCard'
 import { copyText } from '@/lib/clipboard'
 
 // 赞助商模型列表的跨挂载缓存: 切 tab 返回/重复打开即时显示, 60s 内不重复打上游
@@ -809,6 +810,8 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
           </div>
         )}
       </section>
+
+      <WebSearchCard />
       </div>
       </AnchorWrap>
 

@@ -45,6 +45,8 @@ from app.api import (
     watchlist,
 )
 from app.api import auth as auth_api
+from app.api import sentiment_cycle as sentiment_cycle_api
+from app.api import ta_methods as ta_methods_api
 from app.api import settings as settings_api
 from app.api import upgrade_guard as upgrade_guard_api
 from app.api.routes import router as core_router
@@ -622,6 +624,8 @@ app.include_router(alerts.router)
 app.include_router(events.router)
 app.include_router(rps.router)
 app.include_router(sector_rotation.router)
+app.include_router(sentiment_cycle_api.router)
+app.include_router(ta_methods_api.router)
 
 # 二次开发路由与小粒度策略在所有核心路由后注册, 禁止覆盖核心路径。
 extension_registry, extension_load_errors = configure_backend_extensions(app)

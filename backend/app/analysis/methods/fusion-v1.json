@@ -1,0 +1,529 @@
+{
+  "id": "fusion-v1",
+  "name": "融合心法 v1",
+  "version": 1,
+  "based_on": null,
+  "underlying_logic_questions": [
+    "谁在买?",
+    "为什么买?",
+    "能持续多久?"
+  ],
+  "gates": {
+    "market": {
+      "enabled": true,
+      "when_phase": [
+        "退潮"
+      ],
+      "when_extreme": [
+        "亏钱"
+      ],
+      "confidence_mul": 0.6
+    },
+    "sector": {
+      "enabled": true,
+      "when_phase": [
+        "退潮"
+      ],
+      "rs_pct_below": 0.2,
+      "confidence_mul": 0.7
+    }
+  },
+  "logic_quality": {
+    "enabled": true,
+    "news_search": true
+  },
+  "modules": [
+    {
+      "id": "sentiment_cycle",
+      "name": "情绪周期",
+      "scope": "market",
+      "role": "regime",
+      "enabled": true,
+      "weight": 1.0,
+      "features": [],
+      "principles": "先定环境, 再看个股。市场处于冰点时只看低位修复与首板, 发酵期突破信号可信度最高, 高潮期警惕一致性透支, 分歧期重点看量价背离与承接, 退潮期突破大概率失败、高位股优先提示风险。阶段标签以规则层判定为准, 若与盘面观感不一致须说明理由。",
+      "checklist": [
+        "当前阶段是什么?",
+        "阶段是否处于切换窗口?",
+        "今日是否触发极致效应预警?"
+      ],
+      "phase_overrides": {
+        "冰点": {
+          "weights": {
+            "momentum": 0.7,
+            "key_levels": 1.2
+          },
+          "note": "只看低位首板与超跌修复, 弱化追高信号"
+        },
+        "修复": {
+          "weights": {
+            "momentum": 1.1,
+            "phase": 1.2
+          },
+          "note": "关注新题材低位启动"
+        },
+        "发酵": {
+          "weights": {
+            "momentum": 1.3,
+            "trend": 1.1
+          },
+          "note": "突破可信度高, 强者恒强"
+        },
+        "高潮": {
+          "weights": {
+            "volume_price": 1.2
+          },
+          "note": "警惕放量滞涨, 高位一致即分歧前兆"
+        },
+        "分歧": {
+          "weights": {
+            "volume_price": 1.3,
+            "key_levels": 1.1
+          },
+          "note": "重点看量价背离与炸板"
+        },
+        "退潮": {
+          "weights": {
+            "momentum": 0.6,
+            "key_levels": 1.2
+          },
+          "note": "突破大概率失败, 高位股优先提示风险"
+        }
+      }
+    },
+    {
+      "id": "trend",
+      "name": "趋势结构",
+      "scope": "stock",
+      "enabled": true,
+      "weight": 0.22,
+      "features": [
+        {
+          "id": "swing_structure",
+          "params": {
+            "swing_lookback": 5
+          }
+        },
+        {
+          "id": "ma_alignment"
+        }
+      ],
+      "principles": "道氏理论的核心是趋势结构: 高点与低点同时抬高为上升, 同时降低为下降, 一高一低为收敛或扩张。主趋势未出现明确反转信号之前, 默认延续。均线排列与 MA20 斜率作为趋势过滤器: 价格在 MA20 之下且 MA20 下行时, 任何多头形态都只是次级反弹。",
+      "checklist": [
+        "高点是否抬高?",
+        "低点是否抬高?",
+        "MA20 方向朝哪?",
+        "当前是主趋势还是次级折返?"
+      ],
+      "phase_overrides": {}
+    },
+    {
+      "id": "momentum",
+      "name": "动量",
+      "scope": "stock",
+      "enabled": true,
+      "weight": 0.18,
+      "features": [
+        {
+          "id": "relative_strength"
+        },
+        {
+          "id": "macd_momentum"
+        },
+        {
+          "id": "new_high_proximity"
+        }
+      ],
+      "principles": "动量看两件事: 相对强弱与变化速度。相对大盘和所属板块的强弱决定资金选择, MACD 柱的变化方向比金叉死叉本身更重要——柱体收敛意味着推动力衰减。创新高的股票动量最强, 但需区分放量新高与缩量新高。",
+      "checklist": [
+        "相对大盘是强是弱?",
+        "MACD 柱在扩张还是收敛?",
+        "距 60 日高点多远?"
+      ],
+      "phase_overrides": {}
+    },
+    {
+      "id": "volume_price",
+      "name": "量价",
+      "scope": "stock",
+      "enabled": true,
+      "weight": 0.18,
+      "features": [
+        {
+          "id": "vp_confirmation"
+        },
+        {
+          "id": "effort_result"
+        },
+        {
+          "id": "consensus_state"
+        }
+      ],
+      "principles": "量是价的验证。上涨放量、回调缩量是健康结构; 上涨缩量、下跌放量是背离。威科夫的「努力与结果」判断放量是否换来价格推进: 大量换手而价格不动, 说明供给在增加。分歧与一致是筹码状态: 分歧换手意味着有承接, 一致加速意味着筹码锁定与透支。",
+      "checklist": [
+        "上涨日与下跌日的量能比如何?",
+        "是否放量滞涨?",
+        "当前是分歧还是一致?"
+      ],
+      "phase_overrides": {}
+    },
+    {
+      "id": "key_levels",
+      "name": "关键位置与价格行为",
+      "scope": "stock",
+      "enabled": true,
+      "weight": 0.18,
+      "features": [
+        {
+          "id": "level_proximity"
+        },
+        {
+          "id": "breakout_quality"
+        },
+        {
+          "id": "spring_upthrust",
+          "params": {
+            "range_lookback": 20
+          }
+        }
+      ],
+      "principles": "只在关键位置看 K 线形态。支撑与压力来自成交密集区、前高前低、布林与均线。突破的质量取决于是否放量、是否站稳; 假突破是重要信号: 跌破区间下沿后迅速收回(Spring)说明下方承接强, 冲破上沿后迅速回落(Upthrust)说明上方抛压重。A 股涨跌停日的影线与量能会失真, 一字板不参与形态判定。",
+      "checklist": [
+        "最近支撑与压力在哪?",
+        "突破是否放量?",
+        "是否出现假突破?"
+      ],
+      "phase_overrides": {}
+    },
+    {
+      "id": "phase",
+      "name": "市场阶段",
+      "scope": "stock",
+      "enabled": true,
+      "weight": 0.12,
+      "features": [
+        {
+          "id": "range_context"
+        }
+      ],
+      "principles": "威科夫四阶段与道氏三阶段在这里合并: 下跌后的区间整理是吸筹候选, 上涨后的区间整理是派发候选, 趋势中的放量推进是主升段。规则层只给出候选阶段, 最终判断需结合量价与关键位置事件。",
+      "checklist": [
+        "当前处于趋势还是区间?",
+        "区间之前是涨还是跌?"
+      ],
+      "phase_overrides": {}
+    },
+    {
+      "id": "structure",
+      "name": "树干校验",
+      "scope": "stock",
+      "enabled": true,
+      "weight": 0.06,
+      "features": [
+        {
+          "id": "sector_strength"
+        }
+      ],
+      "principles": "树干是个股所处的板块。板块强度决定个股的 beta 环境: 板块走强时个股的强势更可持续, 板块走弱时个股逆势需要更强的独立逻辑。",
+      "checklist": [
+        "所属板块强弱分位?",
+        "板块处于哪个周期阶段?"
+      ],
+      "phase_overrides": {}
+    },
+    {
+      "id": "logic",
+      "name": "逻辑质量",
+      "scope": "stock",
+      "enabled": true,
+      "weight": 0.06,
+      "features": [
+        {
+          "id": "fundamental_floor"
+        },
+        {
+          "id": "narrative_rule"
+        }
+      ],
+      "principles": "基本面守住下限, 叙事决定上限。只看基本面只能保证不大跌; 只有想象力叙事加基本面支撑, 才有爆发的前提。按四象限给出判断: 叙事强+基本面稳健、叙事弱+基本面稳健、叙事强+基本面薄弱、两者皆弱。",
+      "checklist": [
+        "基本面底线稳健吗?",
+        "叙事强度有多高?",
+        "处于哪个象限?"
+      ],
+      "phase_overrides": {}
+    }
+  ],
+  "maxims": [
+    {
+      "id": "everything_cycles",
+      "title": "万物皆周期",
+      "level": "worldview",
+      "enabled": true,
+      "explanation": "市场、板块、个股都处在周期中。先定位阶段, 再谈判断; 同一信号在不同阶段含义完全不同。",
+      "hooks": [],
+      "prompt_principle": "每个层级的结论必须先写明所处周期阶段, 再给判断。三层阶段不一致时, 明确指出以哪一层为主导及原因。",
+      "checklist": [
+        "市场处于哪个阶段?",
+        "板块处于哪个阶段?",
+        "个股处于哪个阶段?"
+      ],
+      "scenarios": [
+        "stock_analysis",
+        "watchlist_review",
+        "market_review"
+      ]
+    },
+    {
+      "id": "underlying_logic",
+      "title": "看底层逻辑",
+      "level": "method",
+      "enabled": true,
+      "explanation": "任何结论都要回答谁在买、为什么买、能持续多久, 否则只是看图说话。",
+      "hooks": [],
+      "prompt_principle": "在综合研判之前, 必须回答三问: 谁在买(资金性质, 推断须标 [推断])、为什么买(叙事/业绩/情绪, 引用资料须标来源)、能持续多久(结合周期阶段给出可证伪的观察点)。",
+      "checklist": [
+        "谁在买?",
+        "为什么买?",
+        "能持续多久?"
+      ],
+      "scenarios": [
+        "stock_analysis",
+        "watchlist_review",
+        "market_review"
+      ]
+    },
+    {
+      "id": "trunk_branches",
+      "title": "树干与树枝",
+      "level": "structure",
+      "enabled": true,
+      "explanation": "树干是宏观大盘与行业, 树枝是个股。覆巢之下无完卵: 大盘或板块走弱时, 个股的强势信号要打折; 个股逆势独强时需要更强的逻辑支撑。",
+      "hooks": [],
+      "prompt_principle": "按市场→板块→个股三层组织结论。市场或板块走弱时, 个股多头结论的置信度必须下调并说明; 板块与个股同时强势标注「板块共振」; 板块弱而个股强标注「独立走势, 需逻辑验证」。",
+      "checklist": [
+        "市场(树根)是否支撑?",
+        "板块(树干)是否走强?",
+        "个股(树枝)相对板块强弱如何?"
+      ],
+      "scenarios": [
+        "stock_analysis",
+        "watchlist_review",
+        "market_review"
+      ]
+    },
+    {
+      "id": "institutions_vs_themes",
+      "title": "机构熄火与题材跷跷板",
+      "level": "market",
+      "enabled": true,
+      "explanation": "A 股存量博弈下, 权重走强会抽走题材资金, 权重熄火时资金才回流题材。炒题材本质是对权重的一种做空。",
+      "hooks": [
+        {
+          "source": "signal:style_is",
+          "when": {
+            "in": [
+              "机构主导"
+            ]
+          },
+          "require": [],
+          "tag": "题材承压",
+          "confidence_mul": 0.85
+        },
+        {
+          "source": "signal:style_is",
+          "when": {
+            "in": [
+              "题材主导"
+            ]
+          },
+          "require": [],
+          "tag": "存量博弈",
+          "confidence_mul": 1.0
+        }
+      ],
+      "prompt_principle": "引用市场风格标签说明资金环境。机构主导时提示题材资金被抽离的风险; 题材主导时提示这是存量博弈, 持续性依赖情绪周期; 风格切换中时提示双向风险。",
+      "checklist": [
+        "当前是机构主导还是题材主导?",
+        "风格是否正在切换?"
+      ],
+      "scenarios": [
+        "stock_analysis",
+        "watchlist_review",
+        "market_review"
+      ]
+    },
+    {
+      "id": "extreme_reversal",
+      "title": "极致赚钱后是极致亏钱",
+      "level": "market",
+      "enabled": true,
+      "explanation": "情绪存在均值回归: 极致赚钱效应之后常伴随极致亏钱效应, 反之亦然。",
+      "hooks": [
+        {
+          "source": "signal:extreme_is",
+          "when": {
+            "in": [
+              "赚钱"
+            ]
+          },
+          "require": [],
+          "tag": "透支风险",
+          "confidence_mul": 0.85
+        },
+        {
+          "source": "signal:extreme_is",
+          "when": {
+            "in": [
+              "亏钱"
+            ]
+          },
+          "require": [],
+          "tag": "均值回归窗口",
+          "confidence_mul": 1.0
+        }
+      ],
+      "prompt_principle": "若当日触发极致赚钱预警, 必须在定调与风险提示中明确指出「极致赚钱效应之后常伴随极致亏钱效应」, 并列出次日验证点(溢价、高位股承接)。极致亏钱日则提示均值回归窗口与修复信号。",
+      "checklist": [
+        "是否触发极致效应?",
+        "次日验证点是什么?"
+      ],
+      "scenarios": [
+        "stock_analysis",
+        "watchlist_review",
+        "market_review"
+      ]
+    },
+    {
+      "id": "divergence_consensus",
+      "title": "买在分歧, 卖在一致",
+      "level": "stock",
+      "enabled": true,
+      "explanation": "分歧意味着换手与承接, 一致意味着筹码锁定与透支。只描述状态, 不构成操作建议。",
+      "hooks": [
+        {
+          "source": "feature:consensus_state",
+          "when": {
+            "eq": "一致加速"
+          },
+          "require": [],
+          "tag": "透支风险",
+          "confidence_mul": 0.85
+        },
+        {
+          "source": "feature:consensus_state",
+          "when": {
+            "eq": "分歧换手"
+          },
+          "require": [
+            "sector_gate",
+            "cycle_in:修复,发酵"
+          ],
+          "tag": "承接有效",
+          "confidence_mul": 1.0
+        },
+        {
+          "source": "feature:consensus_state",
+          "when": {
+            "eq": "分歧转弱"
+          },
+          "require": [],
+          "tag": "承接失败",
+          "confidence_mul": 0.8
+        }
+      ],
+      "prompt_principle": "识别个股与板块处于分歧还是一致。一致加速时提示透支风险(一致往往是阶段高点的前兆); 分歧换手且板块与周期配合时提示承接有效; 分歧转弱时说明分歧未被承接。",
+      "checklist": [
+        "今日是分歧还是一致?",
+        "分歧是否被承接?"
+      ],
+      "scenarios": [
+        "stock_analysis",
+        "watchlist_review"
+      ]
+    },
+    {
+      "id": "narrative_and_fundamentals",
+      "title": "叙事与基本面",
+      "level": "stock",
+      "enabled": true,
+      "explanation": "想象力叙事加基本面才是股价爆发的前提; 只有基本面只能保证不大跌, 没有叙事的股票难有爆发。",
+      "hooks": [
+        {
+          "source": "feature:narrative_rule",
+          "when": {
+            "gte": 0.5
+          },
+          "require": [],
+          "tag": "叙事强",
+          "confidence_mul": 1.0
+        },
+        {
+          "source": "feature:fundamental_floor",
+          "when": {
+            "lte": -0.3
+          },
+          "require": [],
+          "tag": "基本面薄弱",
+          "confidence_mul": 0.9
+        }
+      ],
+      "prompt_principle": "分别给出基本面底线(稳健/一般/薄弱)与叙事强度(高/中/低), 并按四象限解读: 叙事强+基本面稳健=爆发前提; 叙事弱+基本面稳健=防守型; 叙事强+基本面薄弱=纯题材, 弹性大但退潮风险高; 两者皆弱=无逻辑支撑。",
+      "checklist": [
+        "基本面底线是什么?",
+        "叙事强度有多高?",
+        "处于哪个象限?"
+      ],
+      "scenarios": [
+        "stock_analysis",
+        "watchlist_review"
+      ]
+    }
+  ],
+  "synthesis": {
+    "rules": "多维共振才下结论; 维度冲突必须明示冲突点与主导维度; 结论须给出失效条件。规则层状态标签仅供参考, 若结论与之不同必须说明理由。",
+    "state_labels": [
+      "企稳",
+      "反弹",
+      "震荡",
+      "调整",
+      "走弱"
+    ],
+    "score_bands": {
+      "企稳": [
+        0.2,
+        0.5
+      ],
+      "反弹": [
+        0.5,
+        1.0
+      ],
+      "震荡": [
+        -0.2,
+        0.2
+      ],
+      "调整": [
+        -0.5,
+        -0.2
+      ],
+      "走弱": [
+        -1.0,
+        -0.5
+      ]
+    }
+  },
+  "scenarios": {
+    "stock_analysis": {
+      "detail": "full",
+      "max_principle_chars": 4000
+    },
+    "watchlist_review": {
+      "detail": "brief",
+      "max_principle_chars": 1200
+    },
+    "market_review": {
+      "detail": "brief",
+      "max_principle_chars": 1500
+    }
+  }
+}

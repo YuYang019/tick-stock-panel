@@ -467,6 +467,94 @@ def set_emotion_score_config(cfg: dict | None) -> dict | None:
     return normalized
 
 
+def get_sentiment_cycle_config() -> dict | None:
+    """情绪周期口径 (阶段条件/阈值/防抖天数)。None = 出厂口径。"""
+    v = load().get("sentiment_cycle_config")
+    return v if isinstance(v, dict) else None
+
+
+def set_sentiment_cycle_config(cfg: dict | None) -> dict | None:
+    """保存情绪周期口径; 传 None 或 {} = 恢复出厂。"""
+    from app.services.sentiment_cycle import merge_config
+
+    if not cfg:
+        with _SAVE_LOCK:
+            current = load()
+            current.pop("sentiment_cycle_config", None)
+            atomic_write_text(_path(), json.dumps(current, indent=2, ensure_ascii=False))
+            _invalidate_cache()
+        return None
+    normalized = merge_config(cfg)
+    save({"sentiment_cycle_config": normalized})
+    return normalized
+
+
+def get_ta_method_selection() -> dict:
+    """心法选择: {"active": id, "per_scenario": {scenario: id|null}}。"""
+    raw = load().get("ta_method")
+    if not isinstance(raw, dict):
+        return {"active": None, "per_scenario": {}}
+    per = raw.get("per_scenario")
+    return {
+        "active": raw.get("active") if isinstance(raw.get("active"), str) else None,
+        "per_scenario": per if isinstance(per, dict) else {},
+    }
+
+
+def set_ta_method_selection(selection: dict | None) -> dict:
+    from app.analysis.method import _SCENARIOS
+
+    raw = selection or {}
+    per_raw = raw.get("per_scenario") if isinstance(raw.get("per_scenario"), dict) else {}
+    per = {
+        k: v for k, v in per_raw.items()
+        if k in _SCENARIOS and (v is None or isinstance(v, str))
+    }
+    active = raw.get("active")
+    cleaned = {
+        "active": active if isinstance(active, str) else None,
+        "per_scenario": per,
+    }
+    save({"ta_method": cleaned})
+    return cleaned
+
+
+def get_review_watchlist() -> dict:
+    """复盘·自选股章节配置 (开关/分组/截断/新闻条数)。"""
+    from app.services.watchlist_digest import normalize_config
+
+    return normalize_config(load().get("review_watchlist"))
+
+
+def set_review_watchlist(cfg: dict | None) -> dict:
+    from app.services.watchlist_digest import normalize_config
+
+    normalized = normalize_config(cfg)
+    save({"review_watchlist": normalized})
+    return normalized
+
+
+def get_market_style_config() -> dict | None:
+    """市场风格口径。None = 出厂口径。"""
+    v = load().get("market_style_config")
+    return v if isinstance(v, dict) else None
+
+
+def set_market_style_config(cfg: dict | None) -> dict | None:
+    from app.services.market_style import merge_config
+
+    if not cfg:
+        with _SAVE_LOCK:
+            current = load()
+            current.pop("market_style_config", None)
+            atomic_write_text(_path(), json.dumps(current, indent=2, ensure_ascii=False))
+            _invalidate_cache()
+        return None
+    normalized = merge_config(cfg)
+    save({"market_style_config": normalized})
+    return normalized
+
+
 def set_mainline_filter_config(cfg: dict) -> dict:
     """保存主线过滤配置(白名单字段, 部分更新)。修改后需重算主线生效。"""
     updates: dict = {}

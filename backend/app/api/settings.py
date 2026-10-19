@@ -677,6 +677,7 @@ def get_preferences() -> dict:
         "review_schedule": preferences.get_review_schedule(),
         "review_push_channels": preferences.get_review_push_channels(),
         "review_push_mode": preferences.get_review_push_mode(),
+        "review_watchlist": preferences.get_review_watchlist(),
         **preferences.get_mining_schedule(),
     }
 
@@ -2160,3 +2161,90 @@ def api_tokens_revoke(token_id: str, request: Request) -> dict:
     if not svc.revoke_token(request.app.state.repo.store.data_dir, token_id):
         raise HTTPException(status_code=404, detail=f"Token '{token_id}' 不存在")
     return {"status": "revoked", "id": token_id}
+
+
+# ================================================================
+# 联网搜索 (DeepSeek Search/Fetch)
+# ================================================================
+
+
+class WebSearchSettingsIn(BaseModel):
+    enabled: bool = False
+    api_key: str | None = None          # None=保持原值, 空串=清除专用 key
+    daily_budget: int = 200
+    min_score: float = 1.0
+    sites: list[str] = Field(default_factory=list)
+    use_in: dict = Field(default_factory=dict)
+
+
+class WebSearchTestIn(BaseModel):
+    query: str = "A股 收盘 综述"
+
+
+@router.get("/web-search")
+def get_web_search_settings() -> dict:
+    """联网搜索配置: 当前值 + 密钥来源 + 今日用量。
+
+    前端表单完全由本接口渲染; 不返回明文 key。
+    """
+    from app.services import web_search
+
+    return web_search.status()
+
+
+@router.put("/web-search")
+def update_web_search_settings(req: WebSearchSettingsIn) -> dict:
+    """保存联网搜索配置。api_key 为 None 时保持原值, 空串表示清除专用 key。"""
+    from app.services import preferences, web_search
+
+    if req.api_key is not None:
+        key = req.api_key.strip()
+        if key:
+            secrets_store.save({"web_search_api_key": key})
+        else:
+            secrets_store.clear("web_search_api_key")
+
+    cfg = web_search.normalize_config(req.model_dump(exclude={"api_key"}))
+    preferences.save({"web_search": cfg})
+    return web_search.status()
+
+
+@router.post("/web-search/test")
+def test_web_search_settings(req: WebSearchTestIn) -> dict:
+    """按已保存配置跑一次搜索, 验证 key 与连通性。错误保留 200 包体。"""
+    from app.services import web_search
+
+    try:
+        results = web_search.search(req.query, count=3, purpose="settings_test")
+    except Exception as exc:  # noqa: BLE001 — 连通性测试: 任何异常都转为结果回报
+        return {"ok": False, "error": str(exc) or repr(exc), "error_type": type(exc).__name__}
+    return {
+        "ok": True,
+        "count": len(results),
+        "sample": [{"title": r["title"], "url": r["url"]} for r in results[:3]],
+        "usage": web_search.today_usage(),
+    }
+
+
+class ReviewWatchlistIn(BaseModel):
+    enabled: bool = True
+    group_ids: list[str] = Field(default_factory=list)
+    max_rows: int = 30
+    max_detail: int = 10
+    news_top: int = 5
+
+
+@router.get("/preferences/review-watchlist")
+def get_review_watchlist() -> dict:
+    """复盘·自选股章节配置 (开关/分组/截断/新闻条数)。"""
+    from app.services import preferences
+
+    return preferences.get_review_watchlist()
+
+
+@router.put("/preferences/review-watchlist")
+def update_review_watchlist(req: ReviewWatchlistIn) -> dict:
+    """保存复盘·自选股章节配置。"""
+    from app.services import preferences
+
+    return preferences.set_review_watchlist(req.model_dump())

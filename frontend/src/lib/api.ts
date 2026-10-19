@@ -2257,6 +2257,7 @@ export interface Preferences {
   review_schedule: { enabled: boolean; hour: number; minute: number }
   review_push_channels: string[]
   review_push_mode?: 'auto' | 'manual'
+  review_watchlist?: ReviewWatchlistPrefs
   sse_refresh_pages: Record<string, boolean>
   strategy_monitor_enabled: boolean
   strategy_monitor_ids: string[]
@@ -2439,6 +2440,178 @@ export interface UpgradeGuardStatus {
 }
 
 // ===== API surface =====
+export interface TaEval {
+  method_id: string
+  cycle_phase?: string | null
+  extreme?: string | null
+  market_style?: string | null
+  market_gate?: { label?: string; passed?: boolean }
+  sector_gate?: { label?: string; passed?: boolean; phase?: string | null }
+  tree_label?: string
+  effective_weights?: Record<string, number>
+  modules?: Record<string, { score: number | null; features: { id: string; state: string }[] }>
+  composite?: number
+  rule_label?: string
+  confidence?: number
+  principle_checks?: { id: string; title: string; level: string; result: string; tag?: string }[]
+  logic_quality?: { quadrant?: string | null }
+}
+
+export interface TaFeature {
+  id: string
+  label: string
+  module: string
+  params: Record<string, number>
+  factor: boolean
+}
+
+export interface TaMethodSummary {
+  id: string
+  name: string
+  version: number
+  factory: boolean
+  module_count: number
+  maxim_count: number
+  description: string
+}
+
+export interface TaMethodModule {
+  id: string
+  name: string
+  scope: 'market' | 'stock'
+  role?: string
+  enabled: boolean
+  weight: number
+  features: { id: string; params?: Record<string, number> }[]
+  principles: string
+  checklist: string[]
+  phase_overrides?: Record<string, { weights?: Record<string, number>; note?: string }>
+}
+
+export interface TaMaxim {
+  id: string
+  title: string
+  level: 'worldview' | 'method' | 'structure' | 'market' | 'sector' | 'stock'
+  enabled: boolean
+  explanation: string
+  prompt_principle: string
+  checklist: string[]
+  scenarios: string[]
+  hooks?: {
+    source: string
+    when: Record<string, unknown>
+    require?: string[]
+    tag?: string
+    confidence_mul?: number
+  }[]
+}
+
+export interface TaMethod {
+  id: string
+  name: string
+  version: number
+  based_on?: string | null
+  modules: TaMethodModule[]
+  maxims: TaMaxim[]
+  gates?: Record<string, unknown>
+  logic_quality?: Record<string, unknown>
+  underlying_logic_questions?: string[]
+  synthesis?: Record<string, unknown>
+  scenarios?: Record<string, unknown>
+}
+
+export interface TaSelection {
+  active: string | null
+  per_scenario: Record<string, string | null>
+}
+
+export interface TaPreview {
+  method_id: string
+  evaluation: Record<string, unknown>
+  prompt: { system: string; user: string }
+}
+
+export interface ReviewWatchlistPrefs {
+  enabled: boolean
+  group_ids: string[]
+  max_rows: number
+  max_detail: number
+  news_top: number
+}
+
+export interface SentimentCycleState {
+  available: boolean
+  reason?: string
+  as_of: string
+  phase: string
+  pending: string | null
+  confidence: number
+  days_in_phase: number
+  evidence: string[]
+  next_watch: Record<string, string>
+  metrics: Record<string, number | null>
+  extreme: string
+  extreme_items: string[]
+  history: { date: string; phase: string }[]
+}
+
+export interface SectorCycleState {
+  name: string
+  phase: string
+  pending: string | null
+  confidence: number
+  days_in_phase: number
+  members: number
+  limit_up?: number | null
+  max_height?: number | null
+  avg_pct?: number | null
+  evidence: string[]
+  history: string[]
+}
+
+export interface MarketStyleState {
+  available: boolean
+  reason?: string
+  as_of: string
+  style: string
+  style_label: string
+  spread: number
+  spread_pct: number | null
+  spread_trend3: number | null
+  inst_ret: number
+  small_ret: number
+  inst_breadth: number | null
+  small_breadth: number | null
+  market_ret: number
+  note: string
+}
+
+export interface SentimentCycleConfig {
+  config: Record<string, unknown>
+  phases: string[]
+  transitions: Record<string, string[]>
+  factory: Record<string, unknown>
+  customized: boolean
+}
+
+export interface WebSearchUsage {
+  calls: number
+  cached: number
+  budget: number
+}
+
+export interface WebSearchSettings {
+  config: {
+    enabled: boolean
+    daily_budget: number
+    min_score: number
+    sites: string[]
+    use_in: Record<string, boolean>
+  }
+  key: { configured: boolean; source: string; masked: string; can_reuse_ai_key: boolean }
+  usage: WebSearchUsage
+}
+
 export const api = {
   health: () => request<{ status: string; version: string; mode: string }>('/health'),
 
@@ -2494,6 +2667,86 @@ export const api = {
     request<{ ok: boolean; model?: string; response?: string; error?: string; error_type?: string }>('/api/settings/ai/test', {
       method: 'POST',
       body: JSON.stringify(ai),
+    }),
+
+  /** 联网搜索配置 (DeepSeek Search/Fetch) */
+  webSearchSettings: () =>
+    request<WebSearchSettings>('/api/settings/web-search'),
+
+  saveWebSearchSettings: (cfg: {
+    enabled: boolean
+    api_key?: string | null
+    daily_budget: number
+    min_score: number
+    sites: string[]
+    use_in: Record<string, boolean>
+  }) =>
+    request<WebSearchSettings>('/api/settings/web-search', {
+      method: 'PUT',
+      body: JSON.stringify(cfg),
+    }),
+
+  testWebSearch: (query?: string) =>
+    request<{ ok: boolean; count?: number; sample?: { title: string; url: string }[]; usage?: WebSearchUsage; error?: string; error_type?: string }>('/api/settings/web-search/test', {
+      method: 'POST',
+      body: JSON.stringify({ query: query || 'A股 收盘 综述' }),
+    }),
+
+  /** 技术面心法库 */
+  taMethods: () => request<{ methods: TaMethodSummary[]; selection: TaSelection }>('/api/ta-methods'),
+
+  taFeatures: () => request<{ features: TaFeature[] }>('/api/ta-methods/features'),
+
+  taMethod: (id: string) =>
+    request<{ method: TaMethod; factory: boolean }>(`/api/ta-methods/${encodeURIComponent(id)}`),
+
+  saveTaMethod: (id: string, method: TaMethod) =>
+    request<{ method: TaMethod }>(`/api/ta-methods/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ method }),
+    }),
+
+  deleteTaMethod: (id: string) =>
+    request<{ ok: boolean }>(`/api/ta-methods/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
+  /** newId 留空时后端生成未占用的副本 id (同名冲突返回 409, 不覆盖已有心法) */
+  copyTaMethod: (sourceId: string, newId?: string, name?: string) =>
+    request<{ method: TaMethod }>('/api/ta-methods/copy', {
+      method: 'POST',
+      body: JSON.stringify({ source_id: sourceId, new_id: newId ?? null, name }),
+    }),
+
+  updateTaSelection: (selection: TaSelection) =>
+    request<TaSelection>('/api/ta-methods/selection', {
+      method: 'PUT',
+      body: JSON.stringify(selection),
+    }),
+
+  previewTaMethod: (symbol: string, methodId?: string) =>
+    request<TaPreview>('/api/ta-methods/preview', {
+      method: 'POST',
+      body: JSON.stringify({ symbol, method_id: methodId }),
+    }),
+
+  /** 情绪周期 (规则层) */
+  sentimentCycle: (asOf?: string) =>
+    request<SentimentCycleState>(`/api/sentiment-cycle${asOf ? `?as_of=${asOf}` : ''}`),
+
+  marketStyle: (asOf?: string) =>
+    request<MarketStyleState>(`/api/sentiment-cycle/style${asOf ? `?as_of=${asOf}` : ''}`),
+
+  sentimentCycleConfig: () =>
+    request<SentimentCycleConfig>('/api/sentiment-cycle/config'),
+
+  sectorCycles: (kind: 'concept' | 'industry' = 'concept') =>
+    request<{ available: boolean; reason?: string; kind?: string; sectors: SectorCycleState[] }>(
+      `/api/sentiment-cycle/sectors?kind=${kind}`,
+    ),
+
+  saveSentimentCycleConfig: (config: Record<string, unknown> | null) =>
+    request<SentimentCycleConfig>('/api/sentiment-cycle/config', {
+      method: 'PUT',
+      body: JSON.stringify({ config }),
     }),
 
   upgradeGuardStatus: () => request<UpgradeGuardStatus>('/api/upgrade-guard/status'),
@@ -2801,6 +3054,15 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ channels, mode: mode ?? null }),
     }),
+  reviewWatchlistPrefs: () =>
+    request<ReviewWatchlistPrefs>('/api/settings/preferences/review-watchlist'),
+
+  updateReviewWatchlist: (cfg: ReviewWatchlistPrefs) =>
+    request<ReviewWatchlistPrefs>('/api/settings/preferences/review-watchlist', {
+      method: 'PUT',
+      body: JSON.stringify(cfg),
+    }),
+
   updateDepthPollingInterval: (interval: number) =>
     request<{ depth_polling_interval: number }>('/api/settings/preferences/depth-polling-interval', {
       method: 'PUT',
@@ -3922,6 +4184,7 @@ export const api = {
     close?: number | null
     content?: string
     message?: string
+    ta_eval?: TaEval | null
   }> {
     const res = await fetch('/api/stock-analysis/analyze', {
       method: 'POST',
