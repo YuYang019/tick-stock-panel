@@ -300,7 +300,10 @@ def test_api_config_roundtrip(monkeypatch, tmp_path):
     from app.api import sentiment_cycle as api
     from app.services import preferences
 
+    # 恢复出厂分支会直接写盘 (不走 save): 必须把 _path 指到临时目录,
+    # 否则会覆盖真实的 data/user_data/preferences.json
     store: dict = {}
+    monkeypatch.setattr(preferences, "_path", lambda: tmp_path / "preferences.json")
     monkeypatch.setattr(preferences, "load", lambda: dict(store))
     monkeypatch.setattr(preferences, "save", lambda upd: store.update(upd))
 
