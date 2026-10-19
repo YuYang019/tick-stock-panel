@@ -650,12 +650,51 @@ def test_client_errors_never_leak_token(monkeypatch):
 
 
 def test_client_http_and_json_errors(monkeypatch):
-    client, _ = _client(monkeypatch, [_Resp({}, status=502)])
+    # 502 属瞬时故障: 重试耗尽后仍失败才抛出
+    client, http = _client(monkeypatch, [_Resp({}, status=502)] * 4)
     with pytest.raises(tc.TushareError, match="HTTP 502"):
         client.query("daily")
+    assert len(http.bodies) == 4
     client, _ = _client(monkeypatch, [_Resp(ValueError("bad"))])
     with pytest.raises(tc.TushareError, match="JSON"):
         client.query("daily")
+
+
+def test_client_retries_transient_5xx(monkeypatch):
+    """上游偶发 502 不应让整段同步失败 (2026-10-19 全市场日K中断的根因)。"""
+    sleeps: list[float] = []
+    client, http = _client(monkeypatch, [
+        _Resp({}, status=502),
+        _Resp({}, status=503),
+        _ok(["ts_code", "close"], [["600519.SH", 1480.0]]),
+    ], sleeps=sleeps)
+    df = client.query("daily", {"trade_date": "20261019"})
+    assert df.rows() == [("600519.SH", 1480.0)]
+    assert len(http.bodies) == 3
+    assert sleeps == [tc._TRANSIENT_RETRY_BACKOFF_S[0], tc._TRANSIENT_RETRY_BACKOFF_S[1]]
+
+
+def test_client_does_not_retry_permission_or_auth(monkeypatch):
+    for payload in ({"code": 40203, "msg": "没有接口访问权限", "data": None},
+                    {"code": 40101, "msg": "token 不对", "data": None}):
+        client, http = _client(monkeypatch, [_Resp(payload)] * 5)
+        with pytest.raises(tc.TushareError):
+            client.query("daily")
+        assert len(http.bodies) == 1, "权限/token 错误不得重试"
+
+
+def test_transient_retry_does_not_consume_rate_budget(monkeypatch):
+    """限频与瞬时故障各自计数: 限频 1 次 + 502 3 次, 两类预算不互相占用。"""
+    sleeps: list[float] = []
+    client, http = _client(monkeypatch, [
+        _Resp({"code": 40203, "msg": "抱歉，您每分钟最多访问该接口200次", "data": None}),
+        _Resp({}, status=502),
+        _Resp({}, status=502),
+        _Resp({}, status=502),
+        _ok(["ts_code"], [["600519.SH"]]),
+    ], sleeps=sleeps)
+    assert client.query("daily").height == 1
+    assert len(http.bodies) == 5
 
 
 def test_client_requires_token():

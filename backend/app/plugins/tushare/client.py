@@ -26,6 +26,10 @@ BASE_URL = "http://api.tushare.pro"
 
 _DEFAULT_RPM = 200  # 默认每接口每分钟 200 次(2000 积分档常见上限), TUSHARE_RPM 覆盖
 _RATE_RETRY_BACKOFF_S = (3.0, 10.0, 30.0)  # 限频退避重试(最多 3 次)
+# 瞬时故障退避重试: 上游网关偶发 502/503/504 与连接层错误 (实测 2026-10-19 盘后
+# 全市场日K同步因单次 502 整段失败)。只重试明确可重试的错误, 不重试权限/token。
+_TRANSIENT_RETRY_BACKOFF_S = (2.0, 6.0, 15.0)
+_TRANSIENT_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
 _DEFAULT_PAGE_SIZE = 2000  # 未知单次上限的接口取保守页大小, 避免服务端截断被误判为末页
 _MAX_PAGES = 200  # 分页页数上限: 防 has_more 异常/服务端忽略 offset 导致死循环
 
@@ -57,6 +61,10 @@ class TushareAuthError(TushareError):
 
 class TushareRateLimitError(TushareError):
     """限频(重试耗尽后抛出)。不代表无权限。"""
+
+
+class TushareTransientError(TushareError):
+    """上游瞬时故障(5xx / 连接层错误), 可安全重试; 重试耗尽后抛出。"""
 
 
 def classify_error(code, msg: str) -> TushareError:
@@ -153,9 +161,15 @@ class TushareClient:
         try:
             resp = self._http.post(self._base_url, json=body)
         except httpx.HTTPError as e:
-            raise TushareError(self._scrub(f"网络请求失败({api_name}): {e}")) from None
+            # 连接/读超时等传输层错误通常是瞬时的 (与 _post_with_retry 的重试配套)
+            raise TushareTransientError(
+                self._scrub(f"网络请求失败({api_name}): {e}")
+            ) from None
         if resp.status_code != 200:
-            raise TushareError(f"HTTP {resp.status_code}: {api_name}")
+            message = f"HTTP {resp.status_code}: {api_name}"
+            if resp.status_code in _TRANSIENT_STATUS:
+                raise TushareTransientError(message)
+            raise TushareError(message)
         try:
             payload = resp.json()
         except ValueError:
@@ -168,17 +182,34 @@ class TushareClient:
         return data if isinstance(data, dict) else {}
 
     def _post_with_retry(self, api_name: str, params: dict, fields: str) -> dict:
-        """限频错误退避重试(最多 3 次); 其余错误直接抛出。"""
-        for attempt in range(len(_RATE_RETRY_BACKOFF_S) + 1):
+        """限频与瞬时故障分别退避重试; 权限/token 等其余错误直接抛出。
+
+        两类错误各有独立的重试预算: 限频重试期间若遇到 5xx, 不占用限频的次数。
+        """
+        rate_attempt = transient_attempt = 0
+        while True:
             try:
                 return self._post(api_name, params, fields)
             except TushareRateLimitError as e:
-                if attempt >= len(_RATE_RETRY_BACKOFF_S):
+                if rate_attempt >= len(_RATE_RETRY_BACKOFF_S):
                     raise
-                wait = _RATE_RETRY_BACKOFF_S[attempt]
-                logger.warning("Tushare %s 触发限频, %.0fs 后重试: %s", api_name, wait, e)
+                wait = _RATE_RETRY_BACKOFF_S[rate_attempt]
+                rate_attempt += 1
+                logger.warning(
+                    "Tushare %s 触发限频, %.0fs 后重试(%d/%d): %s",
+                    api_name, wait, rate_attempt, len(_RATE_RETRY_BACKOFF_S), e,
+                )
                 self._sleep(wait)
-        raise TushareRateLimitError(f"限频重试耗尽 ({api_name})")  # pragma: no cover
+            except TushareTransientError as e:
+                if transient_attempt >= len(_TRANSIENT_RETRY_BACKOFF_S):
+                    raise
+                wait = _TRANSIENT_RETRY_BACKOFF_S[transient_attempt]
+                transient_attempt += 1
+                logger.warning(
+                    "Tushare %s 上游瞬时故障, %.0fs 后重试(%d/%d): %s",
+                    api_name, wait, transient_attempt, len(_TRANSIENT_RETRY_BACKOFF_S), e,
+                )
+                self._sleep(wait)
 
     @staticmethod
     def _frame(data: dict) -> pl.DataFrame:
