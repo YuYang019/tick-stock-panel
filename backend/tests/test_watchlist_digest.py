@@ -114,6 +114,8 @@ def test_table_contains_columns_and_truncation_note():
     digest = {
         "rows": [
             {"symbol": "600001.SH", "name": "名称1", "change_pct": 0.02, "rs5": 0.01,
+             "strength_rating": "极强", "strength_tag": "逆势强势",
+             "excess_index": {"20": 0.068}, "excess_sector": {"20": 0.031},
              "trend": "多头", "role": "首板·热门", "sector_gate": "板块强势",
              "consensus": "中性", "signals": ["放量"]},
         ],
@@ -122,8 +124,21 @@ def test_table_contains_columns_and_truncation_note():
     table = wd.format_table(digest)
     assert "| 代码 | 名称 |" in table
     assert "+2.00%" in table
+    # 保留 5 日列 + 新增相对强度与 20 日超额两列
+    assert "5日相对强弱" in table and "相对强度" in table and "20日超额(指/板)" in table
+    assert "极强·逆势强势" in table
+    assert "+6.80%/+3.10%" in table
     assert "另有 2 只" in table
     assert wd.format_table({"rows": []}) == ""
+
+
+def test_table_renders_missing_strength_as_dash():
+    digest = {"rows": [{
+        "symbol": "600001.SH", "name": "名称1", "change_pct": -0.01,
+        "rs5": None, "strength_rating": "—", "excess_index": {}, "excess_sector": {},
+    }]}
+    table = wd.format_table(digest)
+    assert "— | — | —/—" in table
 
 
 def test_normalize_config_clamps():

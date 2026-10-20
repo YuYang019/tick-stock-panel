@@ -189,22 +189,45 @@ def _ma_alignment(df: pl.DataFrame, params: dict) -> FeatureResult:
 # ================================================================
 
 def _relative_strength(df: pl.DataFrame, params: dict) -> FeatureResult:
+    """相对强弱: 20 日优先 (基准缺失时用 60 日), 基准为同板块指数。
+
+    只看 20 日会把「短期回调但中期大幅跑赢」的标的判成弱; 有 60 日数据时
+    同时输出 relative_60d, 并在两者方向冲突时取较长窗口定 state。
+    """
     close = _col(df, "close")
     if len(close) < 21 or not close[-1] or not close[-21]:
         return FeatureResult(None, state="数据不足")
     ret20 = close[-1] / close[-21] - 1
-    benchmark = params.get("benchmark_ret20")
-    rs = None if benchmark is None else ret20 - float(benchmark)
-    if rs is None:
+    ret60 = close[-1] / close[-61] - 1 if len(close) >= 61 and close[-61] else None
+    bench_name = str(params.get("benchmark_name") or "大盘")
+    bench20 = params.get("benchmark_ret20")
+    bench60 = params.get("benchmark_ret60")
+    rs20 = None if bench20 is None else ret20 - float(bench20)
+    rs60 = None if (bench60 is None or ret60 is None) else ret60 - float(bench60)
+
+    primary = rs20 if rs20 is not None else rs60
+    if primary is None:
         state = "绝对动量"
-        score = _clamp(ret20 * 5)
+        score = _clamp((ret60 if ret60 is not None else ret20) * 5)
     else:
-        state = "强于大盘" if rs > 0 else "弱于大盘"
-        score = _clamp(rs * 10)
+        # 两个窗口方向冲突时以较长窗口为准 (避免短期噪声盖过中期趋势)
+        verdict = rs60 if rs60 is not None and rs20 is not None and rs20 * rs60 < 0 else primary
+        state = f"强于{bench_name}" if verdict > 0 else f"弱于{bench_name}"
+        score = _clamp(verdict * 10)
+    evidence = [f"20 日收益 {ret20 * 100:+.2f}%"]
+    if ret60 is not None:
+        evidence.append(f"60 日收益 {ret60 * 100:+.2f}%")
+    if rs20 is not None:
+        evidence.append(f"20 日相对{bench_name} {rs20 * 100:+.2f}个点")
+    if rs60 is not None:
+        evidence.append(f"60 日相对{bench_name} {rs60 * 100:+.2f}个点")
     return FeatureResult(score, state, {
         "ret20": round(ret20 * 100, 2),
-        "relative_20d": None if rs is None else round(rs * 100, 2),
-    }, [f"20 日收益 {ret20 * 100:+.2f}%"] + ([f"相对基准 {rs * 100:+.2f}%"] if rs is not None else []))
+        "ret60": None if ret60 is None else round(ret60 * 100, 2),
+        "relative_20d": None if rs20 is None else round(rs20 * 100, 2),
+        "relative_60d": None if rs60 is None else round(rs60 * 100, 2),
+        "benchmark": bench_name,
+    }, evidence)
 
 
 def _macd_momentum(df: pl.DataFrame, params: dict) -> FeatureResult:

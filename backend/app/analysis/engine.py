@@ -131,6 +131,8 @@ def _feature_outputs(method: dict, df: pl.DataFrame, ctx: dict) -> dict[str, dic
             fid = feat["id"]
             if fid == "relative_strength":
                 params.setdefault("benchmark_ret20", ctx.get("benchmark_ret20"))
+                params.setdefault("benchmark_ret60", ctx.get("benchmark_ret60"))
+                params.setdefault("benchmark_name", ctx.get("benchmark_name"))
             elif fid == "sector_strength":
                 params.setdefault("sector_rs_pct", ctx.get("sector_rs_pct"))
                 params.setdefault("sector_phase", ctx.get("sector_phase"))
@@ -159,6 +161,8 @@ def evaluate(
     sector_phase: str | None = None,
     sector_rs_pct: float | None = None,
     benchmark_ret20: float | None = None,
+    benchmark_ret60: float | None = None,
+    benchmark_name: str | None = None,
     financials: dict | None = None,
     concept_heat: float | None = None,
     recent_limit_ups: int | None = None,
@@ -168,6 +172,8 @@ def evaluate(
         "sector_phase": sector_phase,
         "sector_rs_pct": sector_rs_pct,
         "benchmark_ret20": benchmark_ret20,
+        "benchmark_ret60": benchmark_ret60,
+        "benchmark_name": benchmark_name,
         "financials": financials,
         "concept_heat": concept_heat,
         "recent_limit_ups": recent_limit_ups,

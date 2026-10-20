@@ -379,28 +379,50 @@ def _ta_context(repo, symbol: str, df: pl.DataFrame, fins: dict) -> dict:
     except Exception as e:  # noqa: BLE001
         logger.info("ta context (sector) unavailable: %s", e)
     try:
-        ctx["benchmark_ret20"] = _benchmark_ret20(repo, df)
+        ctx.update(_benchmark_returns(repo, df, symbol))
     except Exception as e:  # noqa: BLE001
         logger.info("ta context (benchmark) unavailable: %s", e)
     return ctx
 
 
-def _benchmark_ret20(repo, df: pl.DataFrame) -> float | None:
-    """基准 20 日收益: 用上证指数日 K 计算; 指数数据缺失时返回 None。
+def _benchmark_returns(repo, df: pl.DataFrame, symbol: str) -> dict:
+    """个股相对强度的板块基准收益 (20/60 个交易日)。
 
-    基准必须与个股同口径 (前复权收盘), 不能用市场风格里的单日均值替代。
+    基准随上市板块走 (创业板→创业板指、科创板→科创综指、主板→沪深300),
+    与复盘的自选股口径一致; 此前固定用上证指数, 创业板个股的相对强弱会被
+    系统性低估。窗口两端取个股 K 线上同一批交易日, 保证可比。
     """
+    from app.services.index_const import board_benchmark
+
     if df.is_empty() or "date" not in df.columns:
-        return None
-    end = cn_today()
-    start = end - timedelta(days=45)
-    index_df = repo.get_index_daily("000001.SH", start, end, columns=["date", "close"])
+        return {}
+    dates = df.sort("date")["date"].to_list()
+    if not dates:
+        return {}
+    index_symbol, index_name, matched = board_benchmark(symbol)
+    end = dates[-1]
+    start = end - timedelta(days=110)   # 60 个交易日 ≈ 85 自然日, 留足余量
+    try:
+        index_df = repo.get_index_daily(index_symbol, start, end, columns=["date", "close"])
+    except Exception as e:  # noqa: BLE001
+        logger.info("benchmark %s unavailable: %s", index_symbol, e)
+        return {}
     if index_df is None or index_df.is_empty():
-        return None
-    closes = [float(c) for c in index_df.sort("date")["close"].to_list() if c is not None]
-    if len(closes) < 21 or not closes[-21]:
-        return None
-    return closes[-1] / closes[-21] - 1
+        return {}
+    closes = [None if c is None else float(c) for c in index_df.sort("date")["close"].to_list()]
+    out = {
+        "benchmark_symbol": index_symbol,
+        "benchmark_name": index_name,
+        "benchmark_matched": matched,
+    }
+    for n in (20, 60):
+        if len(closes) >= n + 1 and closes[-1] and closes[-1 - n]:
+            out[f"ret{n}"] = closes[-1] / closes[-1 - n] - 1
+        else:
+            out[f"ret{n}"] = None
+    out["benchmark_ret20"] = out["ret20"]
+    out["benchmark_ret60"] = out["ret60"]
+    return out
 
 
 def _member_count_ok(item: dict) -> bool:
@@ -473,8 +495,18 @@ def _evaluate_ta(repo, data_dir: Path, symbol: str, df: pl.DataFrame, fins: dict
         cycle=ctx.get("cycle"), style=ctx.get("style"),
         sector_phase=ctx.get("sector_phase"), sector_rs_pct=ctx.get("sector_rs_pct"),
         benchmark_ret20=ctx.get("benchmark_ret20"),
+        benchmark_ret60=ctx.get("benchmark_ret60"),
+        benchmark_name=ctx.get("benchmark_name"),
         financials=ctx.get("financials"),
     )
+    # 基准信息随评估结果返回, 供前端小卡与报告引用 (解释"相对强弱"是相对谁)
+    evaluation["benchmark"] = {
+        "symbol": ctx.get("benchmark_symbol"),
+        "name": ctx.get("benchmark_name"),
+        "matched": ctx.get("benchmark_matched", True),
+        "ret20": ctx.get("benchmark_ret20"),
+        "ret60": ctx.get("benchmark_ret60"),
+    }
     system, user = ta_engine.build_ta_prompt(ta_method, evaluation, "stock_analysis")
     return evaluation, system, user
 

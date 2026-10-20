@@ -524,3 +524,24 @@ async def test_stock_stream_appends_check_table_and_sources(monkeypatch, tmp_pat
     assert events[-1]["type"] == "done"
     # 章节结构在基础模板之后 (越靠后优先级越高)
     assert captured["system"].index("本次报告章节") > captured["system"].index("SYS")
+
+
+def test_relative_strength_feature_uses_sixty_day_on_conflict():
+    """20 日跑输但 60 日大幅跑赢时, 以较长窗口定 state, 不再判成弱。"""
+    df = _frame(80)
+    out = features.run_feature("relative_strength", df, {
+        "benchmark_ret20": 0.15,      # 个股 20 日约 +7.6%, 跑输 7.4pp
+        "benchmark_ret60": -0.30,     # 60 日跑赢很多
+        "benchmark_name": "创业板指",
+    })
+    assert out.facts["relative_20d"] < 0
+    assert out.facts["relative_60d"] > 0
+    assert out.state == "强于创业板指"
+    assert out.score > 0
+    assert out.facts["benchmark"] == "创业板指"
+
+
+def test_relative_strength_reports_missing_benchmark_name_default():
+    out = features.run_feature("relative_strength", _frame(80), {})
+    assert out.state == "绝对动量"
+    assert out.facts["relative_20d"] is None

@@ -74,6 +74,11 @@ def _fmt_pct(v: float | None) -> str:
     return "—" if v is None else f"{v * 100:+.2f}%"
 
 
+def _fmt_pp(v: float | None) -> str:
+    """超额收益 (百分点) 展示: +6.79% 表示跑赢基准 6.79 个百分点。"""
+    return "—" if v is None else f"{v * 100:+.2f}%"
+
+
 def _trend_label(row: dict) -> str:
     close, ma5, ma20, ma60 = (_num(row.get(k)) for k in ("close", "ma5", "ma20", "ma60"))
     if None in (close, ma5, ma20, ma60):
@@ -234,10 +239,16 @@ def build_watchlist_digest(
 
     stock_set = set(df_e["symbol"].to_list())
     stock_symbols = [s for s in symbols if s in stock_set]
+    # ETF/指数没有板块归属与板块指数口径, 显式说明而不是静默丢弃
+    excluded = [
+        {"symbol": s, "reason": "ETF/指数不支持板块相对强度"}
+        for s in symbols if s not in stock_set
+    ]
     df = df_e.filter(pl.col("symbol").is_in(stock_symbols)) if stock_symbols else pl.DataFrame()
     if df.is_empty():
         return {"enabled": True, "as_of": str(latest) if latest else None,
-                "rows": [], "detail": [], "reason": "自选标的不在 enriched 股票缓存中"}
+                "rows": [], "detail": [], "reason": "自选标的不在 enriched 股票缓存中",
+                "excluded": excluded}
 
     # 名称与所属行业 (行业归属取自扩展数据配置, 缺失则为空)
     name_map = repo.get_name_map(stock_symbols)
@@ -251,9 +262,11 @@ def build_watchlist_digest(
     ta_eval_map = _evaluate_method(repo, latest, stock_symbols, cycle, sector_map)
     rows_raw = df.to_dicts()
 
-    # 5/20 日区间收益与相对大盘
-    history = _history_returns(repo, latest, stock_symbols)
-    index_ret = _index_return(overview, 5)
+    # 多周期相对强度: 个体收益 + 对同板块指数/所属板块的超额 + 评级 (5/20/60/120 日)
+    from app.services.watchlist_strength import build_strength
+
+    strength = build_strength(repo, latest, stock_symbols, sector_map)
+    strength_stocks = strength.get("stocks") or {}
 
     # 概念热度: 当日概念榜前 10 的名称与领涨股名
     hot_concepts: set[str] = set()
@@ -270,13 +283,19 @@ def build_watchlist_digest(
     for row in rows_raw:
         symbol = str(row.get("symbol"))
         name = name_map.get(symbol) or str(row.get("name") or symbol)
-        ret5 = history.get(symbol, {}).get("ret5")
-        ret20 = history.get(symbol, {}).get("ret20")
-        rs5 = None if (ret5 is None or index_ret is None) else ret5 - index_ret
+        st = strength_stocks.get(symbol) or {}
+        abs_ret = st.get("abs") or {}
+        excess_index = st.get("excess_index") or {}
+        excess_sector = st.get("excess_sector") or {}
+        ret5 = abs_ret.get("5")
+        ret20 = abs_ret.get("20")
+        # 5 日相对强弱 = 个股 5 日收益 − 同板块指数 5 日收益 (不再是"指数当日涨跌")
+        rs5 = excess_index.get("5")
         sector = sector_map.get(symbol)
         consensus = _consensus_label(row)
         signals = [label for key, label in _SIGNAL_LABELS.items() if row.get(key) is True]
-        alert = _alert_score(row, signals, cycle_phase, consensus, ret5)
+        alert = _alert_score(row, signals, cycle_phase, consensus, ret5,
+                             strength_score=st.get("score"), tag=st.get("tag"))
         rows.append({
             "symbol": symbol,
             "name": name,
@@ -285,7 +304,20 @@ def build_watchlist_digest(
             "amount": _num(row.get("amount")),
             "ret5": ret5,
             "ret20": ret20,
+            "ret60": abs_ret.get("60"),
+            "ret120": abs_ret.get("120"),
+            "abs": abs_ret,
             "rs5": rs5,
+            "excess_index": excess_index,
+            "excess_sector": excess_sector,
+            "rps": st.get("rps") or {},
+            "strength_rating": st.get("rating") or "—",
+            "strength_score": st.get("score"),
+            "strength_tag": st.get("tag") or "",
+            "board": st.get("board"),
+            "index_symbol": st.get("index_symbol"),
+            "index_name": st.get("index_name"),
+            "sector_members": st.get("sector_members"),
             "trend": _trend_label(row),
             "role": _cycle_role(row, hot_concepts, top_concepts),
             "sector_gate": _sector_gate(sector),
@@ -301,8 +333,9 @@ def build_watchlist_digest(
     rows.sort(key=lambda r: r["alert_score"], reverse=True)
     total = len(rows)
     kept = rows[: int(cfg["max_rows"])]
-    detail_rows = rows[: int(cfg["max_detail"])]
+    detail_rows = _select_detail(rows, int(cfg["max_detail"]))
 
+    # detail 与 kept 引用同一批 dict: 先补详述字段, 再统一去掉内部 _row
     detail = []
     for item in detail_rows:
         raw = item.pop("_row")
@@ -310,7 +343,7 @@ def build_watchlist_digest(
         item["macd_hist"] = _num(raw.get("macd_hist"))
         item["rsi_14"] = _num(raw.get("rsi_14"))
         detail.append(item)
-    for item in kept[len(detail_rows):]:
+    for item in kept:
         item.pop("_row", None)
 
     news = _fetch_news(detail[: int(cfg["news_top"])]) if cfg["news_top"] else {}
@@ -324,7 +357,33 @@ def build_watchlist_digest(
         "total": total,
         "truncated": total - len(kept),
         "news": news,
+        "benchmarks": strength.get("index_bench") or {},
+        "sector_bench": strength.get("sector_bench") or {},
+        "strength_coverage": strength.get("coverage") or {},
+        "excluded": excluded,
     }
+
+
+def _select_detail(rows: list[dict], limit: int) -> list[dict]:
+    """按异动分取前 N, 并强制并入 |多周期强弱分| 最高的 N 只。
+
+    长周期极强的票当日可能很平静 (异动分低), 若只按异动分截断, 复盘会漏掉
+    最该被分析的相对强度标的。两组合并后按异动分输出。
+    """
+    by_alert = rows[:limit]
+    by_strength = sorted(
+        (r for r in rows if r.get("strength_score") is not None),
+        key=lambda r: abs(r["strength_score"]), reverse=True,
+    )[:limit]
+    picked: list[dict] = []
+    seen: set[str] = set()
+    for item in [*by_alert, *by_strength]:
+        if item["symbol"] in seen:
+            continue
+        seen.add(item["symbol"])
+        picked.append(item)
+    picked.sort(key=lambda r: r["alert_score"], reverse=True)
+    return picked
 
 
 def _evaluate_method(repo, latest: date | None, symbols: list[str],
@@ -370,51 +429,10 @@ def _evaluate_method(repo, latest: date | None, symbols: list[str],
         return {}
 
 
-def _history_returns(repo, latest: date | None, symbols: list[str]) -> dict[str, dict]:
-    """最近 20 个交易日区间收益; 缓存不可用时返回空字典。"""
-    if not latest or not symbols:
-        return {}
-    try:
-        df = repo.get_enriched_range(
-            latest - timedelta(days=45), latest, symbols=symbols,
-            columns=["symbol", "date", "close"],
-        )
-    except Exception as e:  # noqa: BLE001
-        logger.info("watchlist digest: history unavailable: %s", e)
-        return {}
-    if df is None or df.is_empty():
-        return {}
-    out: dict[str, dict] = {}
-    for key, sub in df.sort(["symbol", "date"]).group_by("symbol"):
-        sym = key[0] if isinstance(key, tuple) else key
-        closes = [c for c in sub["close"].to_list() if c is not None]
-        if len(closes) < 2:
-            continue
-        last = closes[-1]
-        out[str(sym)] = {
-            "ret5": (last / closes[-6] - 1) if len(closes) >= 6 and closes[-6] else None,
-            "ret20": (last / closes[-21] - 1) if len(closes) >= 21 and closes[-21] else None,
-        }
-    return out
-
-
-def _index_return(overview: dict | None, days: int) -> float | None:
-    """用当日指数涨跌近似 5 日基准 (无历史指数窗口时不强行计算)。"""
-    if not overview or days != 5:
-        return None
-    indices = overview.get("indices") or []
-    if not indices:
-        return None
-    pcts = [_num(i.get("change_pct")) for i in indices[:3]]
-    pcts = [p for p in pcts if p is not None]
-    if not pcts:
-        return None
-    # 指数 change_pct 已是百分数口径, 这里统一换算为小数
-    return sum(pcts) / len(pcts) / 100
-
-
 def _alert_score(row: dict, signals: list[str], cycle_phase: str | None,
-                 consensus: str, ret5: float | None) -> float:
+                 consensus: str, ret5: float | None, *,
+                 strength_score: float | None = None,
+                 tag: str | None = None) -> float:
     pct = abs(_num(row.get("change_pct")) or 0.0) * 100
     score = pct * 2 + len(signals) * 5
     turnover = _num(row.get("turnover_rate")) or 0.0
@@ -425,6 +443,11 @@ def _alert_score(row: dict, signals: list[str], cycle_phase: str | None,
         score += 15
     if consensus in {"分歧转弱", "一致加速"}:
         score += 8
+    # 长周期相对强度极端的标的即使当日平静也值得详述 (逆势强势 / 极弱)
+    if tag:
+        score += 8
+    elif strength_score is not None and abs(strength_score) >= 0.15:
+        score += 5
     return round(score, 2)
 
 
@@ -462,16 +485,21 @@ def format_table(digest: dict) -> str:
     if not rows:
         return ""
     lines = [
-        "| 代码 | 名称 | 涨跌 | 5日相对强弱 | 趋势 | 周期角色 | 树干 | 分歧/一致 | 规则标签 | 心法标签 | 今日信号 |",
-        "|---|---|---:|---:|---|---|---|---|---|---|---|",
+        "| 代码 | 名称 | 涨跌 | 5日相对强弱 | 相对强度 | 20日超额(指/板) | 趋势 | 周期角色 | 树干 | 分歧/一致 | 规则标签 | 心法标签 | 今日信号 |",
+        "|---|---|---:|---:|---|---:|---|---|---|---|---|---|---|",
     ]
     for r in rows:
-        rs = "—" if r.get("rs5") is None else f"{r['rs5'] * 100:+.2f}%"
+        rs = _fmt_pp(r.get("rs5"))
+        rating = r.get("strength_rating") or "—"
+        if r.get("strength_tag"):
+            rating = f"{rating}·{r['strength_tag']}"
+        excess_20 = f"{_fmt_pp((r.get('excess_index') or {}).get('20'))}/{_fmt_pp((r.get('excess_sector') or {}).get('20'))}"
         signals = "、".join(r.get("signals") or []) or "—"
         ta = r.get("ta") or {}
         ta_tags = "、".join(ta.get("hits") or []) or "—"
         lines.append(
             f"| {r['symbol']} | {r['name']} | {_fmt_pct(r.get('change_pct'))} | {rs} | "
+            f"{rating} | {excess_20} | "
             f"{r.get('trend', '—')} | {r.get('role', '—')} | {r.get('sector_gate', '—')} | "
             f"{r.get('consensus', '—')} | {ta.get('label', '—')} | {ta_tags} | {signals} |"
         )

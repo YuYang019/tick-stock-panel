@@ -128,6 +128,11 @@ export function StockAnalysisDialog({ task, mode, minimized }: Props) {
                     {meta.ta_eval.tree_label && (
                       <span className="rounded bg-elevated px-1.5 py-px text-secondary">{meta.ta_eval.tree_label}</span>
                     )}
+                    {meta.ta_eval.benchmark?.name && (
+                      <span className="rounded bg-elevated px-1.5 py-px text-secondary">
+                        基准 {meta.ta_eval.benchmark.name}
+                      </span>
+                    )}
                     {(meta.ta_eval.principle_checks ?? [])
                       .filter(c => c.result === 'hit' && c.tag)
                       .slice(0, 3)

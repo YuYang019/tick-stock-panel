@@ -2440,6 +2440,14 @@ export interface UpgradeGuardStatus {
 }
 
 // ===== API surface =====
+export interface TaBenchmark {
+  symbol?: string | null
+  name?: string | null
+  matched?: boolean
+  ret20?: number | null
+  ret60?: number | null
+}
+
 export interface TaEval {
   method_id: string
   cycle_phase?: string | null
@@ -2455,6 +2463,7 @@ export interface TaEval {
   confidence?: number
   principle_checks?: { id: string; title: string; level: string; result: string; tag?: string }[]
   logic_quality?: { quadrant?: string | null }
+  benchmark?: TaBenchmark | null
 }
 
 export interface TaFeature {
