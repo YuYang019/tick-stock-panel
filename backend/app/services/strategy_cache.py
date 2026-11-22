@@ -18,6 +18,7 @@ import logging
 import os
 import threading
 import time
+from collections.abc import Callable
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -40,6 +41,13 @@ _CACHE_FILENAME = "strategy_cache.json"
 # 无锁会丢更新/读到半写文件。read_cache 与 write_cache 共用此锁; write 内部复用
 # _read_cache_unlocked 避免自死锁。写入用临时文件 + os.replace 做到原子替换。
 _file_lock = threading.Lock()
+
+# 进程内内存镜像: {path_str: (st_mtime_ns, st_size, 解析后的 dict)}。
+# 缓存文件约 13MB, 前端每 2s 轮询 /cached-summary, 每次 JSON 解析 50-100ms 纯属浪费。
+# 失效判据 = (st_mtime_ns, st_size) 指纹: write_cache 原子替换 → mtime 必变 → 失效;
+# 外部改写文件 → 指纹变 → 重读。所有读写都在 _file_lock 内, 镜像无并发撕扯。
+# 契约: read_cache 返回共享对象, 调用方只读; 需要修改必须先拷贝再改。
+_memory_cache: dict[str, tuple[int, int, dict]] = {}
 
 
 def _cache_path(data_dir: Path) -> Path:
@@ -86,15 +94,29 @@ def clear_cache(data_dir: Path) -> None:
     logger.warning("策略缓存被清除, 调用链: %s", chain)
     path = _cache_path(data_dir)
     with _file_lock:
+        _memory_cache.pop(str(path), None)
         path.unlink(missing_ok=True)
         path.with_name(path.name + ".tmp").unlink(missing_ok=True)
 
 
 def _read_cache_unlocked(data_dir: Path) -> dict | None:
-    """实际读取逻辑 (不持锁)。供 read_cache 与 write_cache 复用, 避免重入死锁。"""
+    """实际读取逻辑 (不持锁)。供 read_cache 与 write_cache 复用, 避免重入死锁。
+
+    先查内存镜像: (st_mtime_ns, st_size) 指纹与磁盘一致 → 直接返回镜像,
+    免去 13MB JSON 重复解析 (前端 2s 轮询场景的主要开销)。
+    """
     path = _cache_path(data_dir)
-    if not path.exists():
+    key = str(path)
+    try:
+        st = path.stat()
+    except OSError:
+        _memory_cache.pop(key, None)
         return None
+
+    hit = _memory_cache.get(key)
+    if hit is not None and hit[0] == st.st_mtime_ns and hit[1] == st.st_size:
+        return hit[2]
+
     try:
         text = path.read_text(encoding="utf-8")
         if not text.strip():
@@ -104,6 +126,7 @@ def _read_cache_unlocked(data_dir: Path) -> dict | None:
         logger.warning("读取策略缓存失败: %s", e)
         return None
 
+    _memory_cache[key] = (st.st_mtime_ns, st.st_size, cached)
     return cached
 
 
@@ -121,6 +144,9 @@ def write_cache(
     data_dir: Path,
     as_of: str,
     results: dict[str, Any],
+    *,
+    validate: Callable[[], None] | None = None,
+    strict: bool = False,
 ) -> None:
     """将策略结果写入缓存文件，同时更新今日曾命中集合。
 
@@ -132,7 +158,9 @@ def write_cache(
 
     # 整个 read-modify-write 持锁: 避免并发 write 丢更新, 也避免与 read_cache 撕裂
     with _file_lock:
-        _write_cache_locked(path, data_dir, as_of, results)
+        if validate is not None:
+            validate()
+        _write_cache_locked(path, data_dir, as_of, results, strict=strict)
 
 
 def _write_cache_locked(
@@ -140,6 +168,8 @@ def _write_cache_locked(
     data_dir: Path,
     as_of: str,
     results: dict[str, Any],
+    *,
+    strict: bool = False,
 ) -> None:
     """持 _file_lock 后的实际写入逻辑 (read-merge-write + 原子替换)。"""
     # 读取旧缓存 (已持锁, 走不重入的 _read_cache_unlocked)
@@ -192,8 +222,14 @@ def _write_cache_locked(
         tmp = path.with_name(path.name + ".tmp")
         tmp.write_text(json.dumps(payload, ensure_ascii=False, default=_json_default), encoding="utf-8")
         os.replace(tmp, path)
+        # 写入成功 → 用新指纹直填镜像, 轮询方 (2s 一次的 /cached-summary) 免付重读。
+        # payload 即刚序列化到磁盘的内容, 镜像与磁盘天然一致。
+        st = path.stat()
+        _memory_cache[str(path)] = (st.st_mtime_ns, st.st_size, payload)
         total_rows = sum(len(r.get("rows", [])) for r in merged_results.values())
         total_ever = sum(len(v) for v in today_ever_matched.values())
         logger.info("策略缓存已写入: %s, %d 策略, %d 命中, %d 曾命中", as_of, len(merged_results), total_rows, total_ever)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.warning("写入策略缓存失败: %s", e)
+        if strict:
+            raise

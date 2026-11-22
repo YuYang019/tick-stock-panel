@@ -52,16 +52,15 @@ def load_frame(
     end: date,
     warmup_bars: int,
     merge_live: Callable[[str, str, pl.DataFrame], list[dict]],
-    live_fallback: Callable[[str, int], pl.DataFrame] | None = None,
+    live_fallback: Callable[[str, str, date, date], pl.DataFrame] | None = None,
 ) -> pl.DataFrame:
     asset_type = repo.resolve_asset_type(symbol)
     extended_start = start - timedelta(days=warmup_calendar_days(warmup_bars))
     df = repo.get_daily_asset(asset_type, symbol, extended_start, end)
     if (df is None or df.is_empty()) and live_fallback is not None:
         # 本地无该标的: 与 /api/kline/daily 同口径实时拉取 (Free/未同步), 否则图上有 K 线却无指标线
-        span_days = (end - extended_start).days
         try:
-            df = live_fallback(symbol, int(span_days / 1.4) + 30)
+            df = live_fallback(symbol, asset_type, extended_start, end)
         except Exception:  # noqa: BLE001 — 拉取失败按无数据处理, 与日K 502 分开
             df = pl.DataFrame()
         if not df.is_empty() and "date" in df.columns:

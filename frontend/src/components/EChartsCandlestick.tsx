@@ -1,6 +1,12 @@
 import { useEffect, useRef, useCallback, useMemo } from 'react'
 import { chartTheme, getTheme, useTheme } from '@/lib/theme'
-import { fmtPct } from '@/lib/format'
+import { fmtPct, pricePrecision } from '@/lib/format'
+import * as echarts from 'echarts'
+import type { ECharts, EChartsOption } from 'echarts'
+
+import type { OHLC, ChartMarker, ChartRange, ChartPriceLine, VolumeCompareConfig, DailyChartProps } from '@/lib/chart-types'
+export type { OHLC, ChartMarker, ChartRange, ChartPriceLine, StockInfo, VolumeCompareConfig } from '@/lib/chart-types'
+import { volMaN, volumeRatioAt, SUB_CHART_META } from '@/lib/chart-indicators'
 import { DEFAULT_MA_LINES, MA_OUTPUTS, indicatorSubKey, type MaKey } from '@/lib/chartLayout'
 import {
   alignOverlays,
@@ -10,72 +16,6 @@ import {
   type AlignedOutput,
   type IndicatorOverlay,
 } from '@/lib/indicatorOverlay'
-import * as echarts from 'echarts'
-import type { ECharts, EChartsOption } from 'echarts'
-
-export interface OHLC {
-  date: string
-  open: number
-  high: number
-  low: number
-  close: number
-  volume?: number
-  ma5?: number | null
-  ma10?: number | null
-  ma20?: number | null
-  ma30?: number | null
-  ma60?: number | null
-  ma120?: number | null
-  macd_dif?: number | null
-  macd_dea?: number | null
-  macd_hist?: number | null
-  rsi_6?: number | null
-  rsi_14?: number | null
-  rsi_24?: number | null
-  kdj_k?: number | null
-  kdj_d?: number | null
-  kdj_j?: number | null
-  boll_upper?: number | null
-  boll_lower?: number | null
-}
-
-export interface ChartMarker {
-  date: string
-  kind: 'buy' | 'sell' | 'neutral'
-  label?: string
-  /** 若为 true，标记放在蜡烛上方（如涨停连板标签）。 */
-  above?: boolean
-  /** 自定义标签颜色，覆盖默认的 kind 对应色。 */
-  color?: string
-}
-
-export interface ChartRange {
-  start: string
-  end: string
-  label?: string
-  color?: string
-}
-
-export interface ChartPriceLine {
-  value: number
-  label?: string
-  color?: string
-  start?: string
-  end?: string
-}
-
-export interface StockInfo {
-  name?: string
-  total_shares?: number
-  float_shares?: number
-  /** 扩展数据（key: configId__fieldName），来自 klineDaily 的 ext_columns */
-  ext?: Record<string, unknown>
-}
-
-export interface VolumeCompareConfig {
-  enabled: boolean
-  days: number
-}
 
 interface SubChartContext {
   compact: boolean
@@ -97,37 +37,11 @@ export interface SubChartDef {
 }
 
 // ===== 成交量 N 日均量 =====
-function volMaN(data: OHLC[], n: number): (number | null)[] {
-  const result: (number | null)[] = []
-  for (let i = 0; i < data.length; i++) {
-    if (i < n - 1) { result.push(null); continue }
-    let sum = 0
-    for (let j = i - n + 1; j <= i; j++) sum += data[j].volume ?? 0
-    result.push(sum / n)
-  }
-  return result
-}
-
 function fmtVol(v: number | null | undefined): string {
   if (v == null) return '—'
   if (v >= 1e8) return (v / 1e8).toFixed(2) + '亿'
   if (v >= 1e4) return (v / 1e4).toFixed(0) + '万'
   return v.toFixed(0)
-}
-
-function volumeRatioAt(data: OHLC[], index: number, days: number): number | null {
-  const window = Math.max(1, Math.min(20, Math.round(days)))
-  if (index < window) return null
-  let sum = 0
-  for (let offset = 1; offset <= window; offset++) {
-    const volume = data[index - offset]?.volume
-    if (volume == null || !Number.isFinite(volume)) return null
-    sum += volume
-  }
-  const average = sum / window
-  const current = data[index]?.volume
-  if (current == null || !Number.isFinite(current) || average <= 0) return null
-  return current / average
 }
 
 function fmtVolumeRatio(value: number | null, digits = 2): string {
@@ -136,9 +50,7 @@ function fmtVolumeRatio(value: number | null, digits = 2): string {
 
 export const SUB_CHARTS: SubChartDef[] = [
   {
-    key: 'vol',
-    label: '成交量',
-    height: 84,
+    ...SUB_CHART_META[0],
     yAxisConfig: { min: 0 },
     buildSeries: (data, context) => {
       const ma5Data = volMaN(data, 5)
@@ -197,9 +109,7 @@ export const SUB_CHARTS: SubChartDef[] = [
     },
   },
   {
-    key: 'macd',
-    label: 'MACD',
-    height: 72,
+    ...SUB_CHART_META[1],
     buildSeries: (data) => [
       {
         name: 'DIF',
@@ -242,9 +152,7 @@ export const SUB_CHARTS: SubChartDef[] = [
     },
   },
   {
-    key: 'rsi',
-    label: 'RSI',
-    height: 72,
+    ...SUB_CHART_META[2],
     yAxisConfig: { min: 0, max: 100 },
     buildSeries: (data) => [
       {
@@ -282,9 +190,7 @@ export const SUB_CHARTS: SubChartDef[] = [
     },
   },
   {
-    key: 'kdj',
-    label: 'KDJ',
-    height: 72,
+    ...SUB_CHART_META[3],
     buildSeries: (data) => [
       {
         name: 'K',
@@ -326,9 +232,7 @@ export const SUB_CHARTS: SubChartDef[] = [
 export const INDICATORS = SUB_CHARTS.filter(s => s.key !== 'vol')
 
 /** 主图叠加指标 (画在 K 线上方, 不占副图空间) */
-export const OVERLAY_INDICATORS: { key: string; label: string }[] = [
-  { key: 'boll', label: 'BOLL' },
-]
+export { OVERLAY_INDICATORS } from '@/lib/chart-indicators'
 
 export type { IndicatorOverlay } from '@/lib/indicatorOverlay'
 
@@ -376,38 +280,7 @@ export function subChartsTotalHeight(defs: readonly SubChartDef[]): number {
   return defs.reduce((h, def) => h + INFO_BAR_H + def.height, 0) + defs.length * SUB_GAP_PX
 }
 
-interface Props {
-  data: OHLC[]
-  markers?: ChartMarker[]
-  ranges?: ChartRange[]
-  priceLines?: ChartPriceLine[]
-  height?: number
-  showMA?: boolean
-  /** 可见均线 (showMA 为总开关); 缺省为 MA5/10/20/60 */
-  maLines?: readonly MaKey[]
-  showInfoBar?: boolean
-  showMarkers?: boolean
-  onToggleMarkers?: () => void
-  stockInfo?: StockInfo
-  symbol?: string
-  linkedPrice?: number | null
-  onDateClick?: (date: string) => void
-  onPriceDoubleClick?: (price: number, currentPrice: number) => void
-  /** 默认可见蜡烛根数, 默认 60; 'all' = 初始适配显示全部返回数据 */
-  visibleBars?: number | 'all'
-  /** 已激活的子图 key 列表 (含 vol, 按点击顺序) */
-  activeIndicators?: string[]
-  /** 成交量柱相对前 N 个交易日均量的显示设置 */
-  volumeCompare?: VolumeCompareConfig
-  /** 加入自选日 (北京时间 YYYY-MM-DD); 有值且落在当前区间内时, 主图画一条「自选」竖虚线 */
-  addedDate?: string | null
-  /**
-   * 通达信自定义指标覆盖层: pane=main 画在 K 线主图; pane=sub 以 `ind:{id}` 作为副图 key,
-   * 需同时出现在 activeIndicators 中才渲染 (顺序随 activeIndicators)。按日期对齐 data。
-   * 不传时行为与改造前一致。
-   */
-  overlays?: readonly IndicatorOverlay[]
-}
+type Props = DailyChartProps & { maLines?: readonly MaKey[]; overlays?: readonly IndicatorOverlay[] }
 
 // 序列颜色 (双主题通用); 画布轴/网格/文字等主题相关色走 CT() 动态取
 const THEME = {
@@ -570,6 +443,7 @@ function buildOption(
   addedDate: string | null | undefined,
   activeSubDefs: readonly SubChartDef[],
   mainOverlay: readonly AlignedOutput[],
+  digits = 2,
 ): EChartsOption {
   const candleData = data.map(d => [d.open, d.close, d.low, d.high])
 
@@ -671,6 +545,8 @@ function buildOption(
   })
   yAxes.push({
     scale: true,
+    minInterval: 10 ** -digits,
+    axisPointer: { label: { formatter: (p: { value: number }) => Number(p.value).toFixed(digits) } },
     min: axisMin,
     max: axisMax,
     // 上下各留 3% 边距: 防止最高/最低点的蜡烛贴边, 涨停/炸板标签被遮挡
@@ -678,7 +554,7 @@ function buildOption(
     splitArea: { show: false },
     axisLine: { show: false }, axisTick: { show: false },
     splitLine: { lineStyle: { color: CT().grid } },
-    axisLabel: { color: CT().text, fontSize: 10, fontFamily: 'JetBrains Mono, monospace' },
+    axisLabel: { color: CT().text, fontSize: 10, fontFamily: 'JetBrains Mono, monospace', formatter: (value: number) => value.toFixed(digits) },
   })
   xAxisIndices.push(0)
 
@@ -741,7 +617,7 @@ function buildOption(
       lineStyle: { color: '#3B82F6', type: 'dashed', width: 1, opacity: 0.7 },
       label: {
         show: true,
-        formatter: linkedPrice.toFixed(2),
+        formatter: linkedPrice.toFixed(digits),
         position: 'insideEndTop',
         color: '#3B82F6',
         fontSize: 10,
@@ -953,6 +829,7 @@ function buildOption(
 
 export function EChartsCandlestick({
   data,
+  assetType,
   markers,
   ranges,
   priceLines,
@@ -973,6 +850,7 @@ export function EChartsCandlestick({
   addedDate,
   overlays,
 }: Props) {
+  const digits = pricePrecision(assetType)
   const hoverSurfaceRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<ECharts | null>(null)
@@ -1091,13 +969,13 @@ export function EChartsCandlestick({
     let html = `<div style="display:flex;align-items:center;gap:6px;padding:0 8px;font:11px 'JetBrains Mono',monospace;select:none;min-height:20px;flex-wrap:wrap">`
     html += `<span style="color:${CT().text}">${d.date}</span>`
     html += `<span style="color:${CT().text}">开</span>`
-    html += `<span style="color:${d.open >= d.close ? THEME.bear : THEME.bull}">${d.open.toFixed(2)}</span>`
+    html += `<span style="color:${d.open >= d.close ? THEME.bear : THEME.bull}">${d.open.toFixed(digits)}</span>`
     html += `<span style="color:${CT().text}">高</span>`
-    html += `<span style="color:${THEME.bull}">${d.high.toFixed(2)}</span>`
+    html += `<span style="color:${THEME.bull}">${d.high.toFixed(digits)}</span>`
     html += `<span style="color:${CT().text}">低</span>`
-    html += `<span style="color:${THEME.bear}">${d.low.toFixed(2)}</span>`
+    html += `<span style="color:${THEME.bear}">${d.low.toFixed(digits)}</span>`
     html += `<span style="color:${CT().text}">收</span>`
-    html += `<span style="color:${clr};font-weight:600">${d.close.toFixed(2)}</span>`
+    html += `<span style="color:${clr};font-weight:600">${d.close.toFixed(digits)}</span>`
     // 涨跌幅 (收盘后, 换手前; 和收间隔一些距离)
     if (prev) {
       const chgPct = (chg / prev.close * 100)
@@ -1346,6 +1224,7 @@ export function EChartsCandlestick({
       addedDate,
       activeSubDefs,
       mainOverlay,
+      digits,
     )
 
     chart.setOption(option, true)
@@ -1375,15 +1254,15 @@ export function EChartsCandlestick({
     let html = `<div style="display:flex;align-items:center;gap:6px;padding:0 8px;font:11px 'JetBrains Mono',monospace;min-height:20px;flex-wrap:wrap">`
     html += `<span style="color:${CT().text}">${d.date}</span>`
     html += `<span style="color:${CT().text}">开</span>`
-    html += `<span style="color:${d.open >= d.close ? THEME.bear : THEME.bull}">${d.open.toFixed(2)}</span>`
+    html += `<span style="color:${d.open >= d.close ? THEME.bear : THEME.bull}">${d.open.toFixed(digits)}</span>`
     html += `<span style="color:${CT().text}">高</span>`
-    html += `<span style="color:${THEME.bull}">${d.high.toFixed(2)}</span>`
+    html += `<span style="color:${THEME.bull}">${d.high.toFixed(digits)}</span>`
     html += `<span style="color:${CT().text}">低</span>`
-    html += `<span style="color:${THEME.bear}">${d.low.toFixed(2)}</span>`
+    html += `<span style="color:${THEME.bear}">${d.low.toFixed(digits)}</span>`
     html += `<span style="color:${CT().text}">收</span>`
     const prevClose0 = data[idx-1]?.close ?? d.close
     const clr0 = d.close >= prevClose0 ? THEME.bull : THEME.bear
-    html += `<span style="color:${clr0};font-weight:600">${d.close.toFixed(2)}</span>`
+    html += `<span style="color:${clr0};font-weight:600">${d.close.toFixed(digits)}</span>`
     // 涨跌幅 (收盘后, 换手前; 和收间隔一些距离)
     if (idx > 0) {
       const chgPct0 = ((d.close - prevClose0) / prevClose0 * 100)

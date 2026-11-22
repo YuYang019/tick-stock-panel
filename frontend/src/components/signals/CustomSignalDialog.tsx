@@ -34,7 +34,7 @@ export function indicatorFieldsUsed(
   const used = new Set<string>()
   for (const c of conditions) {
     if (isInd(c.left)) used.add(c.left)
-    if (c.right.startsWith('field:') && isInd(c.right.slice(6))) used.add(c.right.slice(6))
+    if (typeof c.right === 'string' && c.right.startsWith('field:') && isInd(c.right.slice(6))) used.add(c.right.slice(6))
   }
   return [...used]
 }

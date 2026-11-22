@@ -774,7 +774,9 @@ def test_manifest_and_loader_registration(monkeypatch):
     monkeypatch.setattr(tp, "availability", lambda: (True, "ok"))
     loader._register_one_plugin(manifest)
     provider = loader._PROVIDERS["tushare"]
-    assert isinstance(provider, TushareProvider) and provider.builtin is True
+    from app.data_providers.custom.managed import ManagedProvider
+
+    assert isinstance(provider, ManagedProvider) and provider.builtin is True
     assert loader.provider_has_dataset("tushare", "daily")
     assert not loader.provider_has_dataset("tushare", "realtime")
 

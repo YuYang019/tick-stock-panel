@@ -135,7 +135,8 @@ def test_factor_backtest_warmup_and_warnings(monkeypatch, fake_industry):
     assert result.n_dates > 0
     # 预热按注册表 warmup_bars (21 → ≥120 自然日下限); rps_250 → 251 bar ≈ 416 自然日
     assert engine.calls[0]["start"] <= config.start - timedelta(days=120)
-    assert FactorBacktestService._warmup_calendar_days(["rps_250"]) >= 251 * 1.6
+    long_start = FactorBacktestService(engine)._factor_load_start(config, ["rps_250"])
+    assert (config.start - long_start).days >= int(251 * 1.6)
     assert any(rs.WARN_INDUSTRY_SNAPSHOT in w for w in result.warnings)
 
 

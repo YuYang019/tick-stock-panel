@@ -1,3 +1,5 @@
+import type { DailyMarkerStyle } from './chart-types'
+
 /**
  * 集中管理所有 localStorage 持久化。
  *
@@ -41,22 +43,34 @@ export const storage = {
   /** 查询轮询 / SSE 配置 */
   queryConfig:          kv<unknown>('tf-stocks-query-config'),
 
-  /** 策略池 (screener) — 统一池 (日线+分钟共用, 执行按各自声明周期路由) */
+  /** 策略池 (screener) — v2 起为后端存储的影子副本 (回滚保险), 池本体见 /api/strategy-pool */
   strategyPool:         kv<string[]>('strategy-pool'),
   /** 旧分钟隔离池 — 仅作一次性迁移读取源, 迁移完成后移除该 key */
   strategyPoolMinute:   kv<string[]>('strategy-pool-1m'),
+  /** 策略池 → 后端存储的一次性上载完成标记 (旧本地池先于后端偏好同步时兜底) */
+  strategyPoolV2Migrated: kv<boolean>('tsp-strategy-pool-v2-migrated'),
+  /** 策略库弹窗·左侧策略池排序 (视图偏好: 默认 / 加入时间 / 名称) */
+  screenerPoolSort:     kv<string>('screener-pool-sort'),
+  /** 策略页卡片区·分组 tab (视图偏好: all=全部 / none=未分组 / 分组id) */
+  screenerPoolGroupTab: kv<string>('screener-pool-group-tab'),
 
   /** 自选列表列配置 */
   watchlistColumns:     kv<unknown[]>('watchlist_columns'),
+  /** 自选列表「默认方案」快照 — 恢复默认时回到这份, 而非内置默认 */
+  watchlistColumnsBaseline: kv<unknown[] | null>('watchlist_columns_baseline'),
 
   /** 个股日K信息条指标配置 */
   stockInfoBarFields:   kv<unknown[]>('stock_info_bar_fields'),
+  /** 信息条指标「默认方案」快照 */
+  stockInfoBarFieldsBaseline: kv<unknown[] | null>('stock_info_bar_fields_baseline'),
 
   /** 个股日K成交量对比设置 */
   stockVolumeCompare:   kv<{ enabled: boolean; days: number }>('stock_volume_compare'),
 
   /** 个股日K指标布局 (主图叠加线 + 副图顺序), 结构与清洗见 lib/chartLayout.ts */
   stockChartLayout:     kv<unknown>('stock_chart_layout'),
+  /** 个股详情日K异动显示方式 */
+  stockDailyMarkerStyle: kv<DailyMarkerStyle>('stock_daily_marker_style'),
 
   /** 个股详情多日分时周期 */
   stockPreviewIntradayDays: kv<number>('stock_preview_intraday_days'),
@@ -66,6 +80,8 @@ export const storage = {
 
   /** 策略结果列表列配置 */
   screenerResultColumns: kv<unknown[]>('screener_result_columns'),
+  /** 策略结果列表「默认方案」快照 */
+  screenerResultColumnsBaseline: kv<unknown[] | null>('screener_result_columns_baseline'),
 
   /** 自选列表视图模式 table | card (分组卡片为临时模式, 不持久化) */
   watchlistView:        kv<string>('watchlist_view'),
@@ -81,6 +97,12 @@ export const storage = {
 
   /** 策略结果列表分时图显示状态 */
   screenerIntraday:     kv<boolean>('screener_showIntraday'),
+
+  /** 自选列表分时纵轴模式: adaptive | limit */
+  watchlistIntradayYMode: kv<string>('watchlist_intradayYMode'),
+
+  /** 策略结果列表分时纵轴模式: adaptive | limit */
+  screenerIntradayYMode:  kv<string>('screener_intradayYMode'),
 
   /** 策略结果列表"策略"列标签展开状态 (false=默认收起: 每行首个+计数, 行内可单独展开) */
   screenerStrategyTags: kv<boolean>('screener_strategyTagsExpanded'),
@@ -155,7 +177,9 @@ export const storage = {
     maxPositions: string
     maxExposure: string
     initialCapital: string
-    positionSizing: 'equal' | 'score_weight'
+    positionSizing: 'equal' | 'score_weight' | 'policy'
+    positionPolicyId?: string
+    positionPolicyParams?: Record<string, number | boolean | string>
     mode: 'position' | 'full'
     holdingDays: string
     minuteFill?: boolean

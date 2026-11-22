@@ -208,7 +208,10 @@ def test_series_live_fallback_matches_kline_when_no_local_data(env, monkeypatch)
     fetched = repo.history
     repo.history = repo.history.head(0)
     client.app.state.quote_service = _Quotes(close=None)
-    monkeypatch.setattr(kline_api, "live_enriched_frame", lambda request, symbol, count: fetched)
+    monkeypatch.setattr(
+        kline_api, "live_enriched_frame",
+        lambda request, symbol, asset_type, start, end: fetched.filter(pl.col("date").is_between(start, end)),
+    )
     start = str(fetched["date"].cast(pl.Utf8).str.slice(0, 10).to_list()[-40])
     kline = client.get("/api/kline/daily", params={"symbol": SYMBOL, "start_date": start, "days": 2000}).json()
     series = client.get(

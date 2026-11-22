@@ -271,23 +271,23 @@ def _check_symbol(symbol: str) -> str:
     return symbol
 
 
-def _merge_live(request: Request):
+def _merge_live(request: Request, end: date):
     from app.api.kline import daily_rows_with_live
 
-    return lambda symbol, asset_type, df: daily_rows_with_live(request, symbol, asset_type, df)
+    return lambda symbol, asset_type, df: daily_rows_with_live(request, symbol, asset_type, df, end)
 
 
 def _live_fallback(request: Request):
     from app.api.kline import live_enriched_frame
 
-    return lambda symbol, count: live_enriched_frame(request, symbol, count)
+    return lambda symbol, asset_type, start, end: live_enriched_frame(request, symbol, asset_type, start, end)
 
 
 def _series_for(request: Request, compiled_by_id: dict[str, CompiledIndicator], symbol: str, start: date, end: date):
     repo = request.app.state.repo
     warmup = max((c.warmup_bars for c in compiled_by_id.values()), default=1)
     frame = service.load_frame(
-        repo, symbol, start, end, warmup, _merge_live(request), _live_fallback(request),
+        repo, symbol, start, end, warmup, _merge_live(request, end), _live_fallback(request),
     )
     dates: list[str] = service.date_strings(frame, start)
     indicators: dict[str, dict] = {}

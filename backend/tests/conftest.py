@@ -9,14 +9,19 @@ from __future__ import annotations
 
 import pytest
 
+from app.config import settings
 from app.services import preferences
 
 
 @pytest.fixture(autouse=True)
 def _isolate_preferences_file(tmp_path, monkeypatch):
     path = tmp_path / "user_data" / "preferences.json"
+    original_data_dir = settings.data_dir
+    original_path = preferences._path
 
     def _isolated_path():
+        if settings.data_dir != original_data_dir:
+            return original_path()
         # 与真实 _path() 一致: 调用时才创建父目录 (save 会写同目录下的 .tmp)。
         # 不在 fixture 里预先创建, 否则会与测试自己的 mkdir 冲突。
         path.parent.mkdir(parents=True, exist_ok=True)

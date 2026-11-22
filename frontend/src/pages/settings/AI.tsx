@@ -11,10 +11,7 @@ import { QK } from '@/lib/queryKeys'
 import { AnchorWrap } from '@/lib/useCardFlash'
 import { WebSearchCard } from './WebSearchCard'
 import { copyText } from '@/lib/clipboard'
-
-// 赞助商模型列表的跨挂载缓存: 切 tab 返回/重复打开即时显示, 60s 内不重复打上游
-let sponsorModelsCache: { at: number; items: SponsorModelItem[] } | null = null
-const SPONSOR_MODELS_TTL_MS = 60_000
+import { DEEPSEEK_FALLBACK_RANGE, MAX_DISCOUNT_FALLBACK_PCT, bandDiscountLabel, discountRangeLabel, loadSponsorModelItems, maxDiscountPct, useSponsorModelItems } from '@/lib/sponsor-discount'
 
 // 折扣率 → 中文折数: 0.6→"6折", 0.35→"3.5折", 0.2→"2折"
 const fmtDiscount = (rate: number) => {
@@ -103,9 +100,24 @@ const presetMeta = (p: AiPreset) => {
   }
 }
 
+/** RunningHub 预设描述: 折扣区间取自实时模型定价; 取不到时回退到集中的兜底文案。 */
+function SponsorIntro() {
+  const items = useSponsorModelItems()
+  const range = (items && discountRangeLabel(items)) ?? DEEPSEEK_FALLBACK_RANGE
+  const maxPct = (items && maxDiscountPct(items)) ?? MAX_DISCOUNT_FALLBACK_PCT
+  return (
+    <>
+      本项目赞助商 · OpenAI 兼容中转，单一接口直连 400+ 主流大模型，<span className="font-medium text-amber-600 dark:text-amber-400">Claude、ChatGPT、Gemini</span> 等国际模型直连稳定不掉线。
+      <span className="font-medium text-amber-600 dark:text-amber-400">DeepSeek v4.1 Flash {range}</span>，
+      <span className="text-muted">全场最高</span><span className="font-medium text-amber-600 dark:text-amber-400">优惠 {maxPct}%</span>，
+      <span>邀请链接注册享</span><span className="font-medium text-amber-600 dark:text-amber-400">首充满减</span><span className="text-muted">(满减额度以官网邀请页为准)</span>。
+    </>
+  )
+}
+
 const PRESETS: AiPreset[] = [
   { label: '自定义', url: '', model: '', website: '', websiteLabel: '', description: '不自动填充任何配置，完全手动填写 API 地址、模型和密钥。', custom: true, icon: SlidersHorizontal },
-  { label: 'RunningHub', url: 'https://llm.runninghub.ai/v1', model: 'openai/gpt-6-astra-saver', website: 'https://www.runninghub.ai/zh-cn/call-api/llm/models?source=github&inviteCode=edt5wh7c', websiteLabel: 'www.runninghub.ai · 赞助', sponsor: true, icon: Sparkles, description: <>本项目赞助商 · OpenAI 兼容中转，单一接口直连 400+ 主流大模型，<span className="font-medium text-amber-600 dark:text-amber-400">Claude、ChatGPT、Gemini</span> 等国际模型直连稳定不掉线。<span className="font-medium text-amber-600 dark:text-amber-400">DeepSeek v4.1 Flash 低至 3 折</span>，<span className="text-muted">全场最高优惠 80%</span>，<span className="font-medium text-amber-600 dark:text-amber-400">邀请链接注册赠送 1000 RH 积分</span><span className="text-muted">(积分可用于视频生成)</span>。</> },
+  { label: 'RunningHub', url: 'https://llm.runninghub.ai/v1', model: 'openai/gpt-6-astra-saver', website: 'https://www.runninghub.ai/zh-cn/call-api/llm/models?source=github&inviteCode=edt5wh7c', websiteLabel: 'www.runninghub.ai · 赞助', sponsor: true, icon: Sparkles, description: <SponsorIntro /> },
   { label: 'OpenAI', provider: OPENAI_PROVIDER, url: 'https://api.openai.com/v1', model: DEFAULT_OPENAI_MODEL, website: 'https://platform.openai.com/', websiteLabel: 'platform.openai.com', description: 'OpenAI 官方接口，可单独配置模型支持的推理强度。', icon: Atom },
   { label: 'DeepSeek', url: 'https://api.deepseek.com', model: 'deepseek-v4-pro', website: 'https://www.deepseek.com/', websiteLabel: 'deepseek.com', description: 'DeepSeek 官方 OpenAI 兼容接口。', icon: Waves },
   { label: '通义千问', url: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-3.6plus', website: 'https://tongyi.aliyun.com/', websiteLabel: 'tongyi.aliyun.com', description: '阿里云 DashScope 兼容模式接口。', icon: Cloud },
@@ -411,17 +423,11 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
     setModelsError('')
     setModelFilter('')
     setModelsOpen(true)
-    const cached = sponsorModelsCache
-    if (cached && Date.now() - cached.at < SPONSOR_MODELS_TTL_MS) {
-      setModelItems(cached.items)
-      return
-    }
     setModelsLoading(true)
     try {
-      const data = await api.sponsorModels()
-      const items = data.items ?? data.models.map(id => ({ id }))
+      // 共享加载器自带 60s TTL 与并发合并, 与赞助商介绍条共用同一份数据
+      const items = await loadSponsorModelItems()
       setModelItems(items)
-      sponsorModelsCache = { at: Date.now(), items }
     } catch (error) {
       setModelItems([])
       setModelsError(error instanceof Error ? error.message : '获取模型列表失败')
@@ -455,12 +461,16 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
     setTestResult(null)
     try {
       // 只探测当前表单值, 绝不保存 — 测试失败不能把坏配置写进已保存配置。
-      const r = await api.testAiSettings({
-        provider,
-        ...(isCodexProvider ? {} : { base_url: baseUrl.trim(), protocol }),
-        model: (isCodexProvider ? codexModel : model).trim(),
-        ...(apiKey.trim() ? { api_key: apiKey.trim() } : {}),
-      })
+      const r = await api.testAiSettings(
+        {
+          provider,
+          ...(isCodexProvider ? {} : { base_url: baseUrl.trim(), protocol }),
+          model: (isCodexProvider ? codexModel : model).trim(),
+          ...(apiKey.trim() ? { api_key: apiKey.trim() } : {}),
+        },
+        // codex 探测是真实最小 exec (CLI 启动+一次生成), 默认 30s 会掐断
+        isCodexProvider ? { timeoutMs: 90_000 } : undefined,
+      )
       setTestResult({
         ok: r.ok,
         msg: r.ok ? `连通成功 · ${r.model ?? provider}` : (r.error ?? '未知错误'),
@@ -505,10 +515,10 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
         </div>
         <div className="flex shrink-0 items-center gap-2 pt-0.5">
           {testResult && (
-            <span title="测试只验证当前表单, 不会保存配置; 通过后请点「保存配置」生效"
+            <span role="status" title="测试只验证当前表单, 不会保存配置; 通过后请点「保存配置」生效"
               className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px] ${testResult.ok ? 'border-bear/25 bg-bear/[0.06] text-bear' : 'border-danger/25 bg-danger/[0.06] text-danger'}`}>
               <span className={`h-1 w-1 rounded-full ${testResult.ok ? 'bg-bear' : 'bg-danger'}`} />
-              {testResult.msg}
+              {testResult.ok ? testResult.msg : '测试失败'}
             </span>
           )}
           {(configured || canTest) && (
@@ -658,9 +668,15 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
                             <div className="px-3 py-4 text-center text-xs text-muted">{modelItems.length ? '无匹配模型' : '未获取到模型'}</div>
                           ) : sortedModelItems.map(m => {
                             const discounted = m.discount_rate != null && m.discount_rate < 1
-                            const priceHint = [m.input_price, m.output_price].some(v => v != null)
-                              ? `输入 $${m.input_price ?? '-'}/1K tokens · 输出 $${m.output_price ?? '-'}/1K tokens`
-                              : undefined
+                            const bands = bandDiscountLabel(m)
+                            const priceHint = [
+                              bands ?? undefined,
+                              m.offpeak_label ? `闲时时段: ${m.offpeak_label}` : undefined,
+                              [m.input_price, m.output_price].some(v => v != null)
+                                ? `输入 $${m.input_price ?? '-'}/1K tokens · 输出 $${m.output_price ?? '-'}/1K tokens`
+                                : undefined,
+                            ].filter(Boolean).join('\n') || undefined
+                            const isOffPeak = m.current_band === 'OFF_PEAK'
                             return (
                               <button key={m.id} type="button" onClick={() => { handleModelChange(m.id); setModelsOpen(false) }} title={priceHint}
                                 className={`flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors hover:bg-accent/10 ${model === m.id ? 'text-accent' : 'text-secondary'}`}>
@@ -669,7 +685,18 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
                                   {fmtContext(m.context_length) && (
                                     <span className="text-[10px] text-muted">{fmtContext(m.context_length)}</span>
                                   )}
-                                  {discounted && (
+                                  {bands ? (
+                                    <span
+                                      className={`rounded-full px-1.5 py-px text-[10px] font-medium ${
+                                        isOffPeak
+                                          ? 'bg-emerald-400/15 text-emerald-600 dark:text-emerald-400'
+                                          : 'bg-amber-400/15 text-amber-600 dark:text-amber-400'
+                                      }`}
+                                      title={m.offpeak_label ? `闲时时段: ${m.offpeak_label}` : undefined}
+                                    >
+                                      {bands}{isOffPeak ? ' · 当前闲时' : ' · 当前忙时'}
+                                    </span>
+                                  ) : discounted && (
                                     <span className="rounded-full bg-amber-400/15 px-1.5 py-px text-[10px] font-medium text-amber-600 dark:text-amber-400">
                                       {fmtDiscount(m.discount_rate!)}
                                     </span>
@@ -758,10 +785,10 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
             </p>
           </div>
           <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
-            {testResult && (
+            {testResult?.ok && (
               <span title="测试只验证当前表单, 不会保存配置; 通过后请点「保存配置」生效"
-                className={`inline-flex max-w-[280px] items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px] ${testResult.ok ? 'border-bear/25 bg-bear/[0.06] text-bear' : 'border-danger/25 bg-danger/[0.06] text-danger'}`}>
-                <span className={`h-1 w-1 shrink-0 rounded-full ${testResult.ok ? 'bg-bear' : 'bg-danger'}`} />
+                className="inline-flex max-w-[280px] items-center gap-1.5 rounded-full border border-bear/25 bg-bear/[0.06] px-2 py-0.5 text-[10px] text-bear">
+                <span className="h-1 w-1 shrink-0 rounded-full bg-bear" />
                 <span className="min-w-0 truncate">{testResult.msg}</span>
               </span>
             )}
@@ -781,6 +808,12 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
             </button>
           </div>
         </div>
+
+        {testResult && !testResult.ok && (
+          <div role="alert" className="mx-5 mb-4 whitespace-pre-wrap rounded-lg bg-danger/10 px-3 py-2 text-sm leading-6 text-danger [overflow-wrap:anywhere]">
+            {testResult.msg}
+          </div>
+        )}
 
         {/* 配置文件: Key 统一存放位置, 支持外部编辑后热加载 */}
         {s?.secrets_path && (

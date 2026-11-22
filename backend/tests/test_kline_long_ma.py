@@ -42,7 +42,7 @@ def _client(raw: pl.DataFrame, live_row: dict | None = None) -> TestClient:
     repo._enriched_history_start = None
     repo.get_instruments = lambda: pl.DataFrame()  # type: ignore[method-assign]
     repo.get_historical_shares = lambda: pl.DataFrame()  # type: ignore[method-assign]
-    repo.get_enriched_latest = lambda: (pl.DataFrame(), None)  # type: ignore[method-assign]
+    repo.get_enriched_latest = lambda **kwargs: (pl.DataFrame(), None)  # type: ignore[method-assign]
     repo.resolve_asset_type = lambda symbol: "stock"  # type: ignore[method-assign]
     repo._scan_daily_symbol = (  # type: ignore[method-assign]
         lambda symbol, start, end, columns: raw.filter(

@@ -98,6 +98,18 @@ _SYSTEM_PROMPT = """你是一位拥有 15 年 A 股一线研究经验的市场�
 现在请基于下方数据进行复盘。"""
 
 
+def effective_system_prompt() -> str:
+    """实际下发给 LLM 的系统提示词: 用户自定义优先, 空/未配置回退内置默认模板。
+
+    读取走 preferences 的 mtime 缓存, 每次复盘调用一次, 开销可忽略。
+    自定义值是保存时刻的快照 —— 后续版本升级默认模板不会自动同步到已自定义用户
+    (设置页 UI 有提示); 脏值由 setter 层拦截, 这里只做空值回退双保险。
+    """
+    from app.services import preferences
+
+    return preferences.get_market_recap_system_prompt() or _SYSTEM_PROMPT
+
+
 # ================================================================
 # 用户消息构建(精简切片,控制 token)
 # ================================================================
@@ -403,20 +415,20 @@ async def recap_market_stream(
             overview, news or [], focus, lhb_ctx, bench_ctx, cycle=cycle, style=style,
             sector_cycles=sector_cycles,
         )
-        system_prompt = _SYSTEM_PROMPT
+        system_prompt = effective_system_prompt()
         try:
             from app.analysis import engine as ta_engine
             from app.analysis import method as ta_method
             from app.services import preferences as prefs
 
             data_dir = getattr(getattr(repo, "store", None), "data_dir", None)
-            if data_dir is not None:
+            if data_dir is not None and not prefs.get_market_recap_system_prompt():
                 selected = ta_method.resolve_for_scenario(
                     data_dir, "market_review", prefs.get_ta_method_selection(),
                 )
                 principles = ta_engine.build_principles_prompt(selected, "market_review")
                 if principles:
-                    system_prompt = principles + "\n\n" + _SYSTEM_PROMPT
+                    system_prompt = principles + "\n\n" + system_prompt
         except Exception as e:  # noqa: BLE001 — 心法注入失败不影响复盘
             logger.warning("market review ta method unavailable: %s", e)
         got_content = False

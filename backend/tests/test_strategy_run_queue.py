@@ -4,7 +4,10 @@ from __future__ import annotations
 import threading
 import time
 
+import pytest
+
 from app.services import strategy_run_queue as q
+from app.services.shared_work import WorkBusyError
 
 
 def test_order_strategy_ids_fast_first_unknown_last():
@@ -127,3 +130,120 @@ def test_manager_serializes_different_keys():
     _wait_done(h1, timeout=10)
     _wait_done(h2, timeout=10)
     assert overlap == []
+
+
+# ── 完成后保留 (TTL) + 重跑新执行 + 分钟摘要 ─────────────────────────
+
+def test_done_handle_kept_for_polling_then_rerun_is_fresh():
+    """完成后进暂存区供轮询; TTL 内重跑同 key 应是新执行 (旧行为不搭车)。"""
+    mgr = q.StrategyRunManager()
+    h1 = mgr.get_or_submit(("stock", "1d", "2026-03-02", ()), ["s1"], lambda handle: handle.complete("s1", {"total": 1}))
+    _wait_done(h1)
+
+    # 完成后仍可从 minute_summaries/暂存区读到 (key 非 1m 不导出摘要, 但 handle 在)
+    h2 = mgr.get_or_submit(("stock", "1d", "2026-03-02", ()), ["s1"], lambda handle: handle.complete("s1", {"total": 2}))
+    assert h2 is not h1, "已完成的重跑必须是新执行, 不能搭车旧结果"
+    _wait_done(h2)
+
+
+def test_minute_summaries_export_pending_and_results():
+    mgr = q.StrategyRunManager()
+
+    def job(handle):
+        handle.complete("m1", {"total": 7, "as_of": "2026-03-02", "computed_at": 123})
+        # m2 未完成 → pending
+
+    h = mgr.get_or_submit(("stock", "1m", "2026-03-02", ("m1", "m2")), ["m1", "m2"], job)
+    _wait_done(h, timeout=10)
+
+    summaries = mgr.minute_summaries()
+    minute = [s for s in summaries if s["as_of"] == "2026-03-02"]
+    assert len(minute) == 1
+    s = minute[0]
+    assert s["results"]["m1"]["total"] == 7
+    assert s["results"]["m1"]["computed_at"] == 123
+    assert "m2" not in s["results"]
+    assert s["complete"] is True  # job 正常返回 → done
+
+
+def test_minute_summaries_only_exports_1m_handles():
+    mgr = q.StrategyRunManager()
+    mgr.get_or_submit(("stock", "1d", "2026-03-02", ()), [], lambda handle: None)
+    assert mgr.minute_summaries() == []
+
+
+def test_running_duplicate_still_rides_same_handle():
+    """执行中的重复请求仍搭车同一 handle (回归: 暂存区不能破坏搭车)。"""
+    mgr = q.StrategyRunManager()
+    started = threading.Event()
+    release = threading.Event()
+
+    def job(handle):
+        started.set()
+        assert release.wait(timeout=5)
+
+    h1 = mgr.get_or_submit(("stock", "1m", "2026-03-02", ()), ["s"], job)
+    assert started.wait(timeout=5)
+    h2 = mgr.get_or_submit(("stock", "1m", "2026-03-02", ()), ["s"], job)
+    assert h2 is h1
+    release.set()
+    _wait_done(h1)
+
+
+def test_ensure_reuses_completed_matching_version_but_manual_run_is_fresh():
+    mgr = q.StrategyRunManager()
+    calls = []
+
+    def job(handle):
+        calls.append(1)
+        handle.complete("s", {"total": len(calls)})
+
+    first = mgr.get_or_submit(("k",), ["s"], job, reuse_completed_ms=5000, source_version="v1")
+    _wait_done(first)
+    assert mgr.get_or_submit(("k",), ["s"], job, reuse_completed_ms=5000, source_version="v1") is first
+    changed = mgr.get_or_submit(("k",), ["s"], job, reuse_completed_ms=5000, source_version="v2")
+    _wait_done(changed)
+    assert changed is not first
+    manual = mgr.get_or_submit(("k",), ["s"], job)
+    _wait_done(manual)
+    assert calls == [1, 1, 1]
+
+
+def test_bounded_queue_still_allows_existing_task_subscriptions():
+    mgr = q.StrategyRunManager(max_pending=1)
+    entered, release = threading.Event(), threading.Event()
+
+    def job(handle):
+        entered.set()
+        assert release.wait(3)
+
+    first = mgr.get_or_submit(("a",), ["s"], job)
+    assert entered.wait(3)
+    try:
+        assert mgr.get_or_submit(("a",), ["s"], job) is first
+        with pytest.raises(WorkBusyError):
+            mgr.get_or_submit(("b",), ["s"], job)
+    finally:
+        release.set()
+    _wait_done(first)
+
+
+def test_failed_handle_has_terminal_timestamp_and_does_not_poison_ensure():
+    mgr = q.StrategyRunManager()
+    first = mgr.get_or_submit(("k",), ["s"], lambda handle: handle.fail("error"))
+    _wait_done(first)
+    assert first.finished_at_ms is not None
+    assert mgr.get_or_submit(("k",), ["s"], lambda handle: None, reuse_completed_ms=5000) is first
+    second = mgr.get_or_submit(("k",), ["s"], lambda handle: None, reuse_completed_ms=5000, source_version="new")
+    assert second is not first
+    _wait_done(second)
+
+
+def test_strategy_execution_allows_repository_cold_cache_refresh():
+    from app.services.heavy_job_limiter import shared_heavy_job_limiter
+
+    manager = q.StrategyRunManager()
+    # get_enriched_latest can lazily refresh history with an exclusive slot.
+    with manager.execution(), shared_heavy_job_limiter.slot("exclusive", timeout=0):
+        assert shared_heavy_job_limiter.in_use == shared_heavy_job_limiter.capacity
+    assert shared_heavy_job_limiter.in_use == 0

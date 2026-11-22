@@ -11,7 +11,7 @@
  * 修改本清单需同步回归 navOrder.test.ts。
  */
 export const DEFAULT_NAV_PATHS = [
-  '/', '/watchlist', '/screener', '/factors', '/backtest',
+  '/', '/watchlist', '/screener', '/factors', '/indicators', '/backtest',
   '/stock-analysis', '/limit-ladder', '/concept-analysis', '/industry-analysis', '/financials',
   '/monitor', '/regime', '/abnormal', '/lots', '/paper', '/signals', '/review',
   '/indices', '/data',

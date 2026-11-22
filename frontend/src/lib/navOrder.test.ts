@@ -12,22 +12,23 @@ import {
 // 这是老用户升级兼容的锚点数据: 改动任何一个位置都意味着某类未保存
 // 排序用户的侧栏顺序在升级时发生变化, 需要明确决策而不是顺手调整。
 describe('navOrder: 迁移前默认排序基准', () => {
-  it('覆盖迁移前全部 19 个内置路径且无重复', () => {
-    expect(DEFAULT_NAV_PATHS).toHaveLength(19)
-    expect(new Set(DEFAULT_NAV_PATHS).size).toBe(19)
+  it('覆盖 20 个默认路径且无重复', () => {
+    expect(DEFAULT_NAV_PATHS).toHaveLength(20)
+    expect(new Set(DEFAULT_NAV_PATHS).size).toBe(20)
   })
 
   it('关键位置与迁移前核心导航数组一致', () => {
     expect(DEFAULT_NAV_PATHS[0]).toBe('/')
-    expect(DEFAULT_NAV_PATHS[5]).toBe('/stock-analysis')
-    expect(DEFAULT_NAV_PATHS[10]).toBe('/monitor')
-    expect(DEFAULT_NAV_PATHS[11]).toBe('/regime')
-    expect(DEFAULT_NAV_PATHS[16]).toBe('/review')
-    expect(DEFAULT_NAV_PATHS[18]).toBe('/data')
+    expect(DEFAULT_NAV_PATHS[4]).toBe('/indicators')
+    expect(DEFAULT_NAV_PATHS[6]).toBe('/stock-analysis')
+    expect(DEFAULT_NAV_PATHS[11]).toBe('/monitor')
+    expect(DEFAULT_NAV_PATHS[12]).toBe('/regime')
+    expect(DEFAULT_NAV_PATHS[17]).toBe('/review')
+    expect(DEFAULT_NAV_PATHS[19]).toBe('/data')
   })
 
   it('未知道径返回 Infinity, 排在已知路径之后', () => {
-    expect(defaultNavIndex('/data')).toBe(18)
+    expect(defaultNavIndex('/data')).toBe(19)
     expect(defaultNavIndex('/company/risk')).toBe(Number.POSITIVE_INFINITY)
     expect(defaultNavIndex('/analysis/custom1')).toBe(Number.POSITIVE_INFINITY)
   })
